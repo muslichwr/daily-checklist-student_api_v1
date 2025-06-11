@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Plan extends Model
 {
@@ -46,6 +47,14 @@ class Plan extends Model
     public function child(): BelongsTo
     {
         return $this->belongsTo(Child::class, 'child_id');
+    }
+
+    /**
+     * Get all children that this plan is assigned to.
+     */
+    public function children(): BelongsToMany
+    {
+        return $this->belongsToMany(Child::class, 'plan_children');
     }
 
     /**

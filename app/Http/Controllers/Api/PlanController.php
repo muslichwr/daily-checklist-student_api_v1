@@ -5,12 +5,24 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Plan;
 use App\Models\PlannedActivity;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 
 class PlanController extends Controller
 {
+    /**
+     * Helper method to check if a user is a teacher
+     *
+     * @param  \App\Models\User  $user
+     * @return bool
+     */
+    private function isTeacher(User $user): bool
+    {
+        return $user->role === 'teacher';
+    }
+    
     /**
      * Display a listing of the plans.
      *
@@ -20,9 +32,9 @@ class PlanController extends Controller
     public function index(Request $request)
     {
         $user = Auth::user();
-        $query = Plan::query()->with('plannedActivities');
+        $query = Plan::query()->with(['plannedActivities', 'children']);
         
-        if ($user->isTeacher()) {
+        if ($this->isTeacher($user)) {
             // Teachers see plans they created
             $query->where('teacher_id', $user->id);
         } else {
@@ -30,15 +42,19 @@ class PlanController extends Controller
             $childIds = $user->parentChildren->pluck('id')->toArray();
             
             $query->where(function($query) use ($childIds) {
-                $query->whereIn('child_id', $childIds)
-                      ->orWhereNull('child_id'); // Also include global plans
+                $query->whereHas('children', function($q) use ($childIds) {
+                    $q->whereIn('child_id', $childIds);
+                })
+                ->orWhereDoesntHave('children'); // Also include global plans with no children
             });
         }
         
         if ($request->has('child_id')) {
             $query->where(function($query) use ($request) {
-                $query->where('child_id', $request->child_id)
-                      ->orWhereNull('child_id');
+                $query->whereHas('children', function($q) use ($request) {
+                    $q->where('child_id', $request->child_id);
+                })
+                ->orWhereDoesntHave('children'); // Also include global plans
             });
         }
         
@@ -61,7 +77,7 @@ class PlanController extends Controller
     public function store(Request $request)
     {
         // Only teachers can create plans
-        if (!Auth::user()->isTeacher()) {
+        if (!$this->isTeacher(Auth::user())) {
             return response()->json(['message' => 'Hanya guru yang dapat membuat rencana aktivitas'], 403);
         }
 
@@ -70,6 +86,8 @@ class PlanController extends Controller
             'type' => 'required|in:weekly,daily',
             'start_date' => 'required|date',
             'child_id' => 'nullable|exists:children,id',
+            'child_ids' => 'nullable|array',
+            'child_ids.*' => 'exists:children,id',
             'activities' => 'required|array',
             'activities.*.activity_id' => 'required|exists:activities,id',
             'activities.*.scheduled_date' => 'required|date',
@@ -86,8 +104,15 @@ class PlanController extends Controller
             'teacher_id' => Auth::id(),
             'type' => $request->type,
             'start_date' => $request->start_date,
-            'child_id' => $request->child_id,
+            'child_id' => $request->child_id, // Keep for backward compatibility
         ]);
+
+        // Associate children with the plan
+        if ($request->has('child_ids') && is_array($request->child_ids) && !empty($request->child_ids)) {
+            $plan->children()->attach($request->child_ids);
+        } elseif ($request->has('child_id') && $request->child_id) {
+            $plan->children()->attach($request->child_id);
+        }
 
         // Create planned activities
         foreach ($request->activities as $activity) {
@@ -101,8 +126,8 @@ class PlanController extends Controller
             ]);
         }
 
-        // Load the planned activities
-        $plan->load('plannedActivities');
+        // Load the planned activities and children
+        $plan->load(['plannedActivities', 'children']);
 
         return response()->json($plan, 201);
     }
@@ -115,17 +140,21 @@ class PlanController extends Controller
      */
     public function show($id)
     {
-        $plan = Plan::with('plannedActivities.activity')->findOrFail($id);
+        $plan = Plan::with(['plannedActivities.activity', 'children'])->findOrFail($id);
         
         // Check authorization
-        if (Auth::user()->isTeacher()) {
+        if ($this->isTeacher(Auth::user())) {
             if ($plan->teacher_id !== Auth::id()) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
         } else {
             // For parents
             $childIds = Auth::user()->parentChildren->pluck('id')->toArray();
-            if ($plan->child_id && !in_array($plan->child_id, $childIds)) {
+            
+            // Check if this plan is for any of the parent's children or is a global plan
+            $planForParentChild = $plan->children->isEmpty() || $plan->children->whereIn('id', $childIds)->isNotEmpty();
+            
+            if (!$planForParentChild) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
         }
@@ -143,7 +172,7 @@ class PlanController extends Controller
     public function update(Request $request, $id)
     {
         // Only teachers can update plans
-        if (!Auth::user()->isTeacher()) {
+        if (!$this->isTeacher(Auth::user())) {
             return response()->json(['message' => 'Hanya guru yang dapat mengubah rencana aktivitas'], 403);
         }
 
@@ -159,6 +188,8 @@ class PlanController extends Controller
             'type' => 'nullable|in:weekly,daily',
             'start_date' => 'nullable|date',
             'child_id' => 'nullable|exists:children,id',
+            'child_ids' => 'nullable|array',
+            'child_ids.*' => 'exists:children,id',
             'activities' => 'nullable|array',
             'activities.*.id' => 'nullable|exists:planned_activities,id',
             'activities.*.activity_id' => 'required|exists:activities,id',
@@ -178,6 +209,15 @@ class PlanController extends Controller
             'start_date' => $request->start_date ?? $plan->start_date,
             'child_id' => $request->has('child_id') ? $request->child_id : $plan->child_id,
         ]);
+
+        // Update child associations if provided
+        if ($request->has('child_ids')) {
+            // Sync will remove existing associations and add new ones
+            $plan->children()->sync($request->child_ids);
+        } elseif ($request->has('child_id') && $request->child_id) {
+            // For backward compatibility, sync with single child_id
+            $plan->children()->sync([$request->child_id]);
+        }
 
         // Update activities if provided
         if ($request->has('activities')) {
@@ -219,8 +259,8 @@ class PlanController extends Controller
             }
         }
 
-        // Load the updated planned activities
-        $plan->load('plannedActivities');
+        // Load the updated planned activities and children
+        $plan->load(['plannedActivities', 'children']);
 
         return response()->json($plan);
     }
@@ -234,7 +274,7 @@ class PlanController extends Controller
     public function destroy($id)
     {
         // Only teachers can delete plans
-        if (!Auth::user()->isTeacher()) {
+        if (!$this->isTeacher(Auth::user())) {
             return response()->json(['message' => 'Hanya guru yang dapat menghapus rencana aktivitas'], 403);
         }
 
@@ -273,14 +313,18 @@ class PlanController extends Controller
         
         // Authorization check
         $user = Auth::user();
-        if ($user->isTeacher()) {
+        if ($this->isTeacher($user)) {
             if ($plan->teacher_id !== $user->id) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
         } else {
             // For parents
             $childIds = $user->parentChildren->pluck('id')->toArray();
-            if ($plan->child_id && !in_array($plan->child_id, $childIds)) {
+            
+            // Check if this plan is for any of the parent's children or is a global plan
+            $planForParentChild = $plan->children->isEmpty() || $plan->children->whereIn('id', $childIds)->isNotEmpty();
+            
+            if (!$planForParentChild) {
                 return response()->json(['message' => 'Unauthorized'], 403);
             }
         }
