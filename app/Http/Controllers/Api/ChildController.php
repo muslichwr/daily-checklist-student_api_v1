@@ -40,6 +40,7 @@ class ChildController extends Controller
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'age' => 'required|integer|min:1|max:20',
+            'date_of_birth' => 'nullable|date',
             'parent_id' => 'required|exists:users,id',
             'avatar_url' => 'nullable|string',
         ]);
@@ -51,6 +52,7 @@ class ChildController extends Controller
         $child = Child::create([
             'name' => $request->name,
             'age' => $request->age,
+            'date_of_birth' => $request->date_of_birth,
             'parent_id' => $request->parent_id,
             'teacher_id' => $user->id,
             'avatar_url' => $request->avatar_url,
@@ -107,6 +109,7 @@ class ChildController extends Controller
         $validator = Validator::make($request->all(), [
             'name' => 'sometimes|required|string|max:255',
             'age' => 'sometimes|required|integer|min:1|max:20',
+            'date_of_birth' => 'sometimes|nullable|date',
             'avatar_url' => 'nullable|string',
         ]);
         
@@ -114,7 +117,7 @@ class ChildController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
         
-        $child->update($request->only(['name', 'age', 'avatar_url']));
+        $child->update($request->only(['name', 'age', 'date_of_birth', 'avatar_url']));
         
         return response()->json($child);
     }

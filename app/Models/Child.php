@@ -17,9 +17,19 @@ class Child extends Model
     protected $fillable = [
         'name',
         'age',
+        'date_of_birth',
         'parent_id',
         'teacher_id',
         'avatar_url',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'date_of_birth' => 'date',
     ];
 
     /**
