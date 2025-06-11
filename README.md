@@ -154,21 +154,37 @@ Semua controller dan endpoint API telah selesai diimplementasikan dan teruji:
 Proses integrasi aplikasi Flutter dengan API Laravel:
 - ✅ Provider-provider API Laravel sudah dibuat
 - 🔄 Integrasi Provider dengan UI:
-  - ✅ Auth dan User (implementasi selesai)
-    - ✅ Pembaruan main.dart
-    - ✅ Pembaruan splash_screen.dart
-    - ✅ Pembaruan login_screen.dart
-    - ✅ Pembaruan password_check_screen.dart
-    - ✅ Pembaruan change_password_screen.dart
-  - ⬜ Child
-  - ⬜ Activity
-  - ⬜ Notification
-  - ⬜ Plan
+ 
+  - ✅ Activity
+    - ✅ Pembaruan teacher_activities_screen.dart untuk mendukung kedua API
+    - ✅ Pembaruan activity_detail_screen.dart untuk mendukung kedua API
+    - ✅ Pembaruan add_activity_screen.dart untuk mendukung kedua API
+  - 🔄 Notification
+    - ✅ Pembaruan notification_screen.dart untuk mendukung kedua API
+  - 🔄 Plan
+    - 🔄 Pembaruan parent_planning_screen.dart (sedang implementasi)
+    - 🔄 Pembaruan teacher_planning_screen.dart (sedang implementasi)
+    - ⬜ Pembaruan add_plan_screen.dart
+    - ⬜ Pembaruan planning_detail_screen.dart
+    - ⬜ Pembaruan parent_planning_detail_screen.dart
 - ✅ Implementasi konfigurasi untuk toggle antara Firebase dan Laravel API
 - 🔄 Finalisasi migrasi dari Firebase ke Laravel
 
 Langkah selanjutnya: 
 1. ✅ Menyelesaikan integrasi Auth dan User Provider dengan UI Flutter
-2. 🔄 Pengujian integrasi Auth dan User
-3. ⬜ Melanjutkan integrasi provider Child secara bertahap
-# daily-checklist-student_api_v1
+2. ✅ Menyelesaikan integrasi Child Provider dengan UI Flutter 
+3. ✅ Memperbaiki masalah Provider pada berbagai layar (TeacherHomeScreen, NotificationBadge, dll)
+4. ✅ Menyelesaikan integrasi Activity Provider dengan UI Flutter
+5. ✅ Menghapus kode Firebase dari file-file yang sudah dimigrasi
+   - ✅ teacher_home_screen.dart
+   - ✅ notification_badge.dart
+   - ✅ teacher_register_screen.dart
+   - ✅ add_child_screen.dart
+   - ✅ parent_home_screen.dart
+   - ✅ teacher_activities_screen.dart
+   - ✅ activity_detail_screen.dart
+   - ✅ add_activity_screen.dart
+   - ✅ main.dart
+6. 🔄 Pengujian integrasi Auth, User, Child, dan Activity
+7. ⬜ Melanjutkan integrasi provider Notification secara bertahap
+8. ⬜ Melanjutkan integrasi provider Plan secara bertahap
