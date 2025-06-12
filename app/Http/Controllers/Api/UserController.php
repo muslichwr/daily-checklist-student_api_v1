@@ -19,36 +19,51 @@ class UserController extends Controller
      */
     public function index(Request $request)
     {
-        // Only teachers can list users
-        if (Auth::user()->role !== 'teacher') {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        // Filter users by role (if specified)
+        $currentUser = Auth::user();
         $query = User::query();
         
         if ($request->has('role')) {
-            $query->where('role', $request->role);
+            $role = $request->role;
+            $query->where('role', $role);
+            
+            // Allow parents to list teachers
+            if ($currentUser->role === 'parent' && $role === 'teacher') {
+                // Parents can see all teachers
+                return response()->json($query->orderBy('created_at', 'desc')->get());
+            }
         }
         
-        // Filter by created_by if specified, otherwise show only users created by current teacher
-        if ($request->has('created_by')) {
-            if ($request->created_by == Auth::id()) {
-                // Show users created by the specified user
+        // Only teachers and parents with specific permissions can list other users
+        if ($currentUser->role !== 'teacher' && $currentUser->role !== 'parent') {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        
+        // For parents, restrict to only see teachers or self
+        if ($currentUser->role === 'parent') {
+            $query->where(function($q) use ($currentUser) {
+                $q->where('role', 'teacher')
+                  ->orWhere('id', $currentUser->id);
+            });
+        } else {
+            // For teachers, filter by created_by if specified, otherwise show only users created by current teacher
+            if ($request->has('created_by')) {
+                if ($request->created_by == Auth::id()) {
+                    // Show users created by the specified user
+                    $query->where(function ($query) {
+                        $query->where('created_by', Auth::id())
+                              ->orWhere('id', Auth::id()); // Include self
+                    });
+                } else {
+                    // A teacher is trying to see users created by another teacher - not allowed
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            } else {
+                // Default: Filter users created by the current teacher
                 $query->where(function ($query) {
                     $query->where('created_by', Auth::id())
                           ->orWhere('id', Auth::id()); // Include self
                 });
-            } else {
-                // A teacher is trying to see users created by another teacher - not allowed
-                return response()->json(['message' => 'Unauthorized'], 403);
             }
-        } else {
-            // Default: Filter users created by the current teacher
-            $query->where(function ($query) {
-                $query->where('created_by', Auth::id())
-                      ->orWhere('id', Auth::id()); // Include self
-            });
         }
 
         $users = $query->orderBy('created_at', 'desc')->get();
@@ -68,6 +83,13 @@ class UserController extends Controller
         
         // Check if user has permission to view this user
         $currentUser = Auth::user();
+        
+        // Allow parent users to view teacher data
+        if ($user->role === 'teacher' && $currentUser->role === 'parent') {
+            return response()->json($user);
+        }
+        
+        // Otherwise use standard permission checks
         if ($currentUser->role !== 'teacher' && $currentUser->id !== $user->id && $currentUser->id !== $user->created_by) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
