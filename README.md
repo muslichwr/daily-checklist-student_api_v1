@@ -1,5 +1,82 @@
 # Daily Checklist Student API
 
+## Backend-Heavy Architecture Implementation
+
+This project has been refactored to implement a Backend-Heavy architecture, where more business logic is handled on the server-side. The notification system has been enhanced to demonstrate this approach.
+
+### Key Features
+
+- Centralized notification management
+- Automatic notification generation when events occur (new plans, activity status updates)
+- Push notification handling through Firebase Cloud Messaging
+- Token management for reliable message delivery
+
+### Added Components
+
+1. **Firebase Token Model**: Manages user's FCM tokens for push notifications
+2. **Enhanced Controllers**: 
+   - `NotificationController` handles basic CRUD plus specialized notification logic
+   - `NotificationSystemController` manages system-wide notifications
+   - Integration with other controllers like `PlanController` for automatic notifications
+
+### Setup Requirements
+
+To use the notification system:
+
+1. **Firebase Project Setup**:
+   - Create a Firebase project at [firebase.google.com](https://firebase.google.com)
+   - Set up Firebase Cloud Messaging in your project
+   - Obtain your Server Key and other credentials
+
+2. **Environment Configuration**:
+   - Add the following to your `.env` file:
+
+```
+# Firebase configuration
+FIREBASE_SERVER_KEY=your_firebase_server_key_here
+FIREBASE_API_KEY=your_firebase_api_key_here
+FIREBASE_PROJECT_ID=your_firebase_project_id_here
+FIREBASE_MESSAGING_SENDER_ID=your_firebase_messaging_sender_id_here
+FIREBASE_APP_ID=your_firebase_app_id_here
+```
+
+3. **Database Migration**:
+   - Run `php artisan migrate` to create the firebase_tokens table
+
+### Endpoints
+
+#### Notification Endpoints
+- `GET /notifications` - Get user's notifications
+- `POST /notifications` - Create a notification
+- `GET /notifications/{id}` - Get a specific notification
+- `PUT /notifications/{id}` - Update a notification (mark as read)
+- `DELETE /notifications/{id}` - Delete a notification
+- `PUT /notifications/read-all` - Mark all notifications as read
+- `POST /notifications/register-token` - Register a Firebase token
+- `GET /notifications/unread-count` - Get count of unread notifications
+- `POST /notifications/new-plan` - Notify about a new activity plan
+- `POST /notifications/activity-status` - Notify about activity status change
+- `POST /notifications/system` - Create system notifications
+- `POST /notifications/send-to-parents` - Send notifications to specific parents
+
+### For Detailed Information
+
+See `README_BACKEND_HEAVY.md` for a complete guide on implementing the Backend-Heavy approach for other features in your application.
+
+## Installation
+
+1. Clone the repository
+2. Run `composer install`
+3. Copy `.env.example` to `.env` and configure your database and Firebase settings
+4. Run `php artisan key:generate`
+5. Run `php artisan migrate`
+6. Run `php artisan db:seed` (optional, for test data)
+7. Run `php artisan serve`
+
+## API Documentation
+
+API documentation is available at `/api/documentation` when the application is running.
+
 ## Transisi dari Firebase ke Laravel 12
 
 Dokumen ini berisi langkah-langkah untuk melakukan transisi backend dari Firebase ke Laravel 12.

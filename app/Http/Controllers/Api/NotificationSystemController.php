@@ -15,16 +15,33 @@ use Illuminate\Support\Facades\DB;
 class NotificationSystemController extends Controller
 {
     /**
+     * @var NotificationController
+     */
+    protected $notificationController;
+    
+    /**
+     * Create a new controller instance.
+     */
+    public function __construct(NotificationController $notificationController)
+    {
+        $this->notificationController = $notificationController;
+    }
+    
+    /**
      * Create a system notification that will be sent to all parents
      */
     public function createSystemNotification(Request $request)
     {
+        // Authorize: Only teachers and admins can send system notifications
+        if (!Auth::user()->isTeacher() && !Auth::user()->isAdmin()) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+        
         $validator = Validator::make($request->all(), [
             'title' => 'required|string|max:255',
             'message' => 'required|string',
             'type' => 'required|string',
             'related_id' => 'nullable|string',
-            'sender_id' => 'required|exists:users,id',
         ]);
 
         if ($validator->fails()) {
@@ -38,35 +55,42 @@ class NotificationSystemController extends Controller
             // Get all parent users
             $parentUsers = User::where('role', 'parent')->get();
             $notifications = [];
+            $failedCount = 0;
             
             foreach ($parentUsers as $user) {
-                $notification = Notification::create([
-                    'user_id' => $user->id,
-                    'title' => $request->title,
-                    'message' => $request->message,
-                    'type' => $request->type,
-                    'related_id' => $request->related_id,
-                    'is_read' => false,
-                    'sent_by' => $request->sender_id,
-                ]);
-                
-                $notifications[] = $notification;
+                try {
+                    $notification = Notification::create([
+                        'user_id' => $user->id,
+                        'title' => $request->title,
+                        'message' => $request->message,
+                        'type' => $request->type,
+                        'related_id' => $request->related_id,
+                        'is_read' => false,
+                        'sent_by' => Auth::id(),
+                    ]);
+                    
+                    $notifications[] = $notification;
+                    
+                    // Send push notification using the controller
+                    $this->notificationController->sendPushNotification($notification);
+                } catch (\Exception $e) {
+                    Log::error("Failed to send notification to user {$user->id}: {$e->getMessage()}");
+                    $failedCount++;
+                }
             }
             
             DB::commit();
             
-            // Implement FCM notification here if needed
-            // This would use Firebase to send push notifications to all parent users
-            
             return response()->json([
                 'message' => 'System notification created for all parents',
-                'notification_count' => count($notifications)
+                'notification_count' => count($notifications),
+                'failed_count' => $failedCount
             ], 201);
             
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error creating system notification: ' . $e->getMessage());
-            return response()->json(['error' => 'Failed to create system notification'], 500);
+            return response()->json(['error' => 'Failed to create system notification: ' . $e->getMessage()], 500);
         }
     }
     
@@ -75,6 +99,11 @@ class NotificationSystemController extends Controller
      */
     public function sendToParents(Request $request)
     {
+        // Authorize: Only teachers and admins can send these notifications
+        if (!Auth::user()->isTeacher() && !Auth::user()->isAdmin()) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+        
         $validator = Validator::make($request->all(), [
             'title' => 'required|string|max:255',
             'message' => 'required|string',
@@ -82,7 +111,6 @@ class NotificationSystemController extends Controller
             'related_id' => 'nullable|string',
             'child_ids' => 'required|array',
             'child_ids.*' => 'exists:children,id',
-            'sender_id' => 'required|exists:users,id',
         ]);
 
         if ($validator->fails()) {
@@ -95,6 +123,7 @@ class NotificationSystemController extends Controller
             
             $notifiedParentIds = [];
             $notifications = [];
+            $failedCount = 0;
             
             foreach ($request->child_ids as $childId) {
                 // Get child record with parent info
@@ -106,37 +135,113 @@ class NotificationSystemController extends Controller
                         continue;
                     }
                     
-                    // Create notification for the child's parent
-                    $notification = Notification::create([
-                        'user_id' => $child->parent_id,
-                        'child_id' => $childId,
-                        'title' => $request->title,
-                        'message' => $request->message,
-                        'type' => $request->type,
-                        'related_id' => $request->related_id,
-                        'is_read' => false,
-                        'sent_by' => $request->sender_id,
-                    ]);
-                    
-                    $notifications[] = $notification;
-                    $notifiedParentIds[] = $child->parent_id;
+                    try {
+                        // Create notification for the child's parent
+                        $notification = Notification::create([
+                            'user_id' => $child->parent_id,
+                            'child_id' => $childId,
+                            'title' => $request->title,
+                            'message' => $request->message,
+                            'type' => $request->type,
+                            'related_id' => $request->related_id,
+                            'is_read' => false,
+                            'sent_by' => Auth::id(),
+                        ]);
+                        
+                        $notifications[] = $notification;
+                        $notifiedParentIds[] = $child->parent_id;
+                        
+                        // Send push notification
+                        $this->notificationController->sendPushNotification($notification);
+                    } catch (\Exception $e) {
+                        Log::error("Failed to send notification for child {$childId}: {$e->getMessage()}");
+                        $failedCount++;
+                    }
                 }
             }
             
             DB::commit();
             
-            // Implement FCM notification here if needed
-            // This would use Firebase to send push notifications to the specific parent users
-            
             return response()->json([
                 'message' => 'Notifications sent to parents',
-                'notification_count' => count($notifications)
+                'notification_count' => count($notifications),
+                'failed_count' => $failedCount
             ], 201);
             
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error sending notifications to parents: ' . $e->getMessage());
-            return response()->json(['error' => 'Failed to send notifications to parents'], 500);
+            return response()->json(['error' => 'Failed to send notifications to parents: ' . $e->getMessage()], 500);
+        }
+    }
+    
+    /**
+     * Send notification when a teacher creates a new activity plan
+     */
+    public function notifyNewActivityPlan(Request $request)
+    {
+        // Authorize: Only teachers can create plans
+        if (!Auth::user()->isTeacher()) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+        
+        $validator = Validator::make($request->all(), [
+            'plan_id' => 'required|string',
+            'plan_title' => 'required|string',
+            'child_id' => 'required|exists:children,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+        
+        $success = $this->notificationController->sendNewPlanNotification(
+            $request->plan_id,
+            Auth::id(),
+            $request->child_id,
+            $request->plan_title
+        );
+        
+        if ($success) {
+            return response()->json(['message' => 'Plan notification sent successfully']);
+        } else {
+            return response()->json(['error' => 'Failed to send plan notification'], 500);
+        }
+    }
+    
+    /**
+     * Send notification when a teacher updates an activity status
+     */
+    public function notifyActivityStatusUpdate(Request $request)
+    {
+        // Authorize: Only teachers can update activity status
+        if (!Auth::user()->isTeacher()) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+        
+        $validator = Validator::make($request->all(), [
+            'activity_id' => 'required|string',
+            'activity_title' => 'required|string',
+            'child_id' => 'required|exists:children,id',
+            'status' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+        
+        $success = $this->notificationController->sendActivityStatusNotification(
+            $request->activity_id,
+            Auth::id(),
+            $request->child_id,
+            $request->activity_title,
+            $request->status
+        );
+        
+        if ($success) {
+            return response()->json(['message' => 'Activity status notification sent successfully']);
+        } else {
+            return response()->json(['error' => 'Failed to send activity status notification'], 500);
         }
     }
 }

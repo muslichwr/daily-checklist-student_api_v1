@@ -6,19 +6,24 @@ use App\Http\Controllers\Controller;
 use App\Models\Plan;
 use App\Models\PlannedActivity;
 use App\Models\User;
-use App\Models\Notification;
-use App\Services\FCMService;
+use App\Models\Child;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PlanController extends Controller
 {
-    protected $fcmService;
+    protected $notificationController;
+    protected $notificationSystemController;
 
-    public function __construct(FCMService $fcmService)
-    {
-        $this->fcmService = $fcmService;
+    public function __construct(
+        NotificationController $notificationController,
+        NotificationSystemController $notificationSystemController
+    ) {
+        $this->notificationController = $notificationController;
+        $this->notificationSystemController = $notificationSystemController;
     }
     
     /**
@@ -108,6 +113,9 @@ class PlanController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
+        try {
+            DB::beginTransaction();
+
         // Create plan
         $plan = Plan::create([
             'teacher_id' => Auth::id(),
@@ -139,77 +147,42 @@ class PlanController extends Controller
             ]);
         }
 
-        // Get information about the teacher for notifications
-        $teacher = Auth::user();
-        $teacherName = $teacher->name;
-
-        // Create notifications and send FCM for each parent of the associated children
+            // Send notifications using Backend-Heavy approach
         if (!empty($childIds)) {
             foreach ($childIds as $childId) {
-                $child = \App\Models\Child::find($childId);
+                    $child = Child::find($childId);
                 if ($child) {
-                    $parent = $child->parent;
-                    if ($parent) {
-                        // Create in-app notification
-                        Notification::create([
-                            'user_id' => $parent->id,
-                            'title' => 'Rencana Aktivitas Baru',
-                            'message' => 'Guru telah membuat rencana aktivitas '.strtolower($request->type).' baru untuk ' . $child->name,
-                            'type' => 'new_plan',
-                            'related_id' => $plan->id,
-                            'child_id' => $childId,
-                            'is_read' => false,
-                        ]);
-                        
-                        // Send FCM notification if token exists
-                        if ($parent->fcm_token) {
-                            $this->fcmService->sendNotificationToDevice(
-                                $parent->fcm_token,
-                                'Rencana Aktivitas Baru',
-                                "$teacherName telah membuat rencana aktivitas ".strtolower($request->type)." baru untuk " . $child->name,
-                                [
-                                    'plan_id' => $plan->id,
-                                    'child_id' => $childId,
-                                    'type' => 'new_plan'
-                                ]
-                            );
-                        }
-                    }
+                        // Use the specialized notification service
+                        $planTitle = $request->type == 'weekly' ? 'Mingguan' : 'Harian';
+                        $this->notificationController->sendNewPlanNotification(
+                            $plan->id,
+                            Auth::id(),
+                            $childId,
+                            $planTitle
+                        );
                 }
             }
         } else {
-            // For global plans without specific children
-            $parents = User::where('role', 'parent')->get();
-            foreach ($parents as $parent) {
-                // Create in-app notification
-                Notification::create([
-                    'user_id' => $parent->id,
+                // For global plans without specific children, use system notification
+                $this->notificationSystemController->createSystemNotification(new Request([
                     'title' => 'Rencana Aktivitas Baru',
                     'message' => 'Guru telah membuat rencana aktivitas '.strtolower($request->type).' baru',
                     'type' => 'new_plan',
                     'related_id' => $plan->id,
-                    'is_read' => false,
-                ]);
-                
-                // Send FCM notification if token exists
-                if ($parent->fcm_token) {
-                    $this->fcmService->sendNotificationToDevice(
-                        $parent->fcm_token,
-                        'Rencana Aktivitas Baru',
-                        "$teacherName telah membuat rencana aktivitas ".strtolower($request->type)." baru",
-                        [
-                            'plan_id' => $plan->id,
-                            'type' => 'new_plan'
-                        ]
-                    );
-                }
+                ]));
             }
-        }
+            
+            DB::commit();
 
         // Load the planned activities and children
         $plan->load(['plannedActivities', 'children']);
 
         return response()->json($plan, 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error creating plan: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to create plan: ' . $e->getMessage()], 500);
+        }
     }
 
     /**
@@ -251,98 +224,143 @@ class PlanController extends Controller
      */
     public function update(Request $request, $id)
     {
-        // Only teachers can update plans
-        if (!$this->isTeacher(Auth::user())) {
-            return response()->json(['message' => 'Hanya guru yang dapat mengubah rencana aktivitas'], 403);
-        }
-
-        $plan = Plan::findOrFail($id);
-        
-        // Check if the plan belongs to the user
-        if ($plan->teacher_id !== Auth::id()) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
         // Validate request
         $validator = Validator::make($request->all(), [
-            'type' => 'nullable|in:weekly,daily',
-            'start_date' => 'nullable|date',
+            'type' => 'sometimes|in:weekly,daily',
+            'start_date' => 'sometimes|date',
             'child_id' => 'nullable|exists:children,id',
             'child_ids' => 'nullable|array',
             'child_ids.*' => 'exists:children,id',
-            'activities' => 'nullable|array',
-            'activities.*.id' => 'nullable|exists:planned_activities,id',
-            'activities.*.activity_id' => 'required|exists:activities,id',
-            'activities.*.scheduled_date' => 'required|date',
+            'activities' => 'sometimes|array',
+            'activities.*.id' => 'sometimes|exists:planned_activities,id',
+            'activities.*.activity_id' => 'required_without:activities.*.id|exists:activities,id',
+            'activities.*.scheduled_date' => 'required_with:activities.*.activity_id|date',
             'activities.*.scheduled_time' => 'nullable|string',
             'activities.*.reminder' => 'nullable|boolean',
             'activities.*.completed' => 'nullable|boolean',
+            'deleted_activities' => 'nullable|array',
+            'deleted_activities.*' => 'exists:planned_activities,id',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        // Update plan
-        $plan->update([
-            'type' => $request->type ?? $plan->type,
-            'start_date' => $request->start_date ?? $plan->start_date,
-            'child_id' => $request->has('child_id') ? $request->child_id : $plan->child_id,
-        ]);
+        $plan = Plan::with(['plannedActivities', 'children'])->findOrFail($id);
 
-        // Update child associations if provided
-        if ($request->has('child_ids')) {
-            // Sync will remove existing associations and add new ones
-            $plan->children()->sync($request->child_ids);
-        } elseif ($request->has('child_id') && $request->child_id) {
-            // For backward compatibility, sync with single child_id
-            $plan->children()->sync([$request->child_id]);
+        // Check authorization
+        if ($plan->teacher_id !== Auth::id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        // Update activities if provided
-        if ($request->has('activities')) {
-            // Remove existing activities not in the new list
-            $activityIds = collect($request->activities)
-                ->filter(function ($activity) {
-                    return isset($activity['id']);
-                })
-                ->pluck('id')
-                ->toArray();
+        try {
+            DB::beginTransaction();
             
-            PlannedActivity::where('plan_id', $plan->id)
-                ->whereNotIn('id', $activityIds)
-                ->delete();
+            // Update plan basic info
+            if ($request->has('type')) {
+                $plan->type = $request->type;
+            }
             
-            // Update or create activities
-            foreach ($request->activities as $activity) {
-                if (isset($activity['id'])) {
-                    // Update existing activity
-                    PlannedActivity::where('id', $activity['id'])
-                        ->update([
-                            'activity_id' => $activity['activity_id'],
-                            'scheduled_date' => $activity['scheduled_date'],
-                            'scheduled_time' => $activity['scheduled_time'] ?? null,
-                            'reminder' => $activity['reminder'] ?? true,
-                            'completed' => $activity['completed'] ?? false,
-                        ]);
+            if ($request->has('start_date')) {
+                $plan->start_date = $request->start_date;
+            }
+            
+            $plan->save();
+            
+            // Update child associations if specified
+            if ($request->has('child_ids')) {
+                $plan->children()->detach();
+                if (!empty($request->child_ids)) {
+                    $plan->children()->attach($request->child_ids);
+                }
+            } elseif ($request->has('child_id')) {
+                $plan->children()->detach();
+                if ($request->child_id) {
+                    $plan->children()->attach($request->child_id);
+                }
+            }
+            
+            // Update activities
+            if ($request->has('activities')) {
+                foreach ($request->activities as $activityData) {
+                    if (isset($activityData['id'])) {
+                        // Update existing planned activity
+                        $plannedActivity = PlannedActivity::findOrFail($activityData['id']);
+                        
+                        // Only update the fields that are provided
+                        if (isset($activityData['scheduled_date'])) {
+                            $plannedActivity->scheduled_date = $activityData['scheduled_date'];
+                        }
+                        
+                        if (isset($activityData['scheduled_time'])) {
+                            $plannedActivity->scheduled_time = $activityData['scheduled_time'];
+                        }
+                        
+                        if (isset($activityData['reminder'])) {
+                            $plannedActivity->reminder = $activityData['reminder'];
+                        }
+                        
+                        if (isset($activityData['completed'])) {
+                            $previousStatus = $plannedActivity->completed;
+                            $plannedActivity->completed = $activityData['completed'];
+                            
+                            // If activity completion status changed to completed, send notification
+                            if (!$previousStatus && $activityData['completed']) {
+                                $activity = $plannedActivity->activity;
+                                $childIds = $plan->children->pluck('id')->toArray();
+                                
+                                // Send notifications to parents of associated children
+                                foreach ($childIds as $childId) {
+                                    $this->notificationController->sendActivityStatusNotification(
+                                        $plannedActivity->id,
+                                        Auth::id(),
+                                        $childId,
+                                        $activity->name,
+                                        'completed'
+                                    );
+                                }
+                            }
+                        }
+                        
+                        $plannedActivity->save();
                 } else {
-                    // Create new activity
+                        // Create new planned activity
                     PlannedActivity::create([
                         'plan_id' => $plan->id,
-                        'activity_id' => $activity['activity_id'],
-                        'scheduled_date' => $activity['scheduled_date'],
-                        'scheduled_time' => $activity['scheduled_time'] ?? null,
-                        'reminder' => $activity['reminder'] ?? true,
-                        'completed' => $activity['completed'] ?? false,
+                            'activity_id' => $activityData['activity_id'],
+                            'scheduled_date' => $activityData['scheduled_date'],
+                            'scheduled_time' => $activityData['scheduled_time'] ?? null,
+                            'reminder' => $activityData['reminder'] ?? true,
+                            'completed' => $activityData['completed'] ?? false,
                     ]);
                 }
             }
         }
 
-        // Load the updated planned activities and children
-        $plan->load(['plannedActivities', 'children']);
+            // Delete activities if specified
+            if ($request->has('deleted_activities') && is_array($request->deleted_activities)) {
+                foreach ($request->deleted_activities as $activityId) {
+                    $plannedActivity = PlannedActivity::where('id', $activityId)
+                        ->where('plan_id', $plan->id)
+                        ->first();
+                        
+                    if ($plannedActivity) {
+                        $plannedActivity->delete();
+                    }
+                }
+            }
+            
+            DB::commit();
+            
+            // Reload the plan with its relationships
+            $plan->load(['plannedActivities.activity', 'children']);
 
         return response()->json($plan);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error updating plan: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to update plan: ' . $e->getMessage()], 500);
+        }
     }
 
     /**
@@ -353,26 +371,37 @@ class PlanController extends Controller
      */
     public function destroy($id)
     {
-        // Only teachers can delete plans
-        if (!$this->isTeacher(Auth::user())) {
-            return response()->json(['message' => 'Hanya guru yang dapat menghapus rencana aktivitas'], 403);
-        }
-
         $plan = Plan::findOrFail($id);
         
-        // Check if the plan belongs to the user
+        // Check authorization
         if ($plan->teacher_id !== Auth::id()) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        // Delete the plan (cascade will delete related planned activities)
+        try {
+            DB::beginTransaction();
+            
+            // Delete all related planned activities
+            PlannedActivity::where('plan_id', $plan->id)->delete();
+            
+            // Detach all children
+            $plan->children()->detach();
+            
+            // Delete the plan
         $plan->delete();
 
-        return response()->json(['message' => 'Rencana aktivitas berhasil dihapus']);
+            DB::commit();
+            
+            return response()->json(['message' => 'Plan deleted successfully']);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error deleting plan: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to delete plan: ' . $e->getMessage()], 500);
+        }
     }
-    
+
     /**
-     * Update the completion status of a planned activity.
+     * Update the status of a planned activity.
      *
      * @param  \Illuminate\Http\Request  $request
      * @param  int  $id
@@ -380,6 +409,7 @@ class PlanController extends Controller
      */
     public function updateActivityStatus(Request $request, $id)
     {
+        // Validate request
         $validator = Validator::make($request->all(), [
             'completed' => 'required|boolean',
         ]);
@@ -388,146 +418,79 @@ class PlanController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $activity = PlannedActivity::with('activity')->findOrFail($id);
-        $plan = $activity->plan;
-        
-        // Authorization check
-        $user = Auth::user();
-        if ($this->isTeacher($user)) {
-            if ($plan->teacher_id !== $user->id) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
-        } else {
-            // For parents
-            $childIds = $user->parentChildren->pluck('id')->toArray();
-            
-            // Check if this plan is for any of the parent's children or is a global plan
-            $planForParentChild = $plan->children->isEmpty() || $plan->children->whereIn('id', $childIds)->isNotEmpty();
-            
-            if (!$planForParentChild) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
+        $plannedActivity = PlannedActivity::with(['activity', 'plan.children'])->findOrFail($id);
+        $plan = $plannedActivity->plan;
+
+        // Check authorization
+        // Teachers can update any activity they created
+        $authorized = false;
+        if ($this->isTeacher(Auth::user()) && $plan->teacher_id === Auth::id()) {
+            $authorized = true;
+        } 
+        // Parents can only mark activities as completed for their own children
+        else if (!$this->isTeacher(Auth::user())) {
+            $childIds = Auth::user()->parentChildren->pluck('id')->toArray();
+            $planChildIds = $plan->children->pluck('id')->toArray();
+            $authorized = !empty(array_intersect($childIds, $planChildIds));
         }
-        
-        $wasAlreadyCompleted = $activity->completed;
-        $activity->completed = $request->completed;
-        $activity->save();
-        
-        // Create notification and send FCM if the activity was marked as completed (and wasn't already completed)
-        if ($request->completed && !$wasAlreadyCompleted) {
-            $activityName = $activity->activity->title ?? 'Aktivitas';
+
+        if (!$authorized) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        try {
+            DB::beginTransaction();
             
-            // Get the child ID if this activity is for a specific child
-            $childId = null;
-            $childName = '';
+            // Update the completion status
+            $previousStatus = $plannedActivity->completed;
+            $plannedActivity->completed = $request->completed;
+            $plannedActivity->save();
             
-            // Get information about who completed the activity
-            $completerName = $user->name;
-            $completerRole = $user->role;
-            
-            if ($plan->children->isNotEmpty()) {
-                foreach ($plan->children as $child) {
-                    $childId = $child->id;
-                    $childName = $child->name;
-                    
-                    // Create notification for the parent if marked complete by teacher
-                    if ($child->parent && $this->isTeacher($user)) {
-                        // Create in-app notification
-                        Notification::create([
-                            'user_id' => $child->parent->id,
-                            'title' => 'Aktivitas Selesai',
-                            'message' => $childName . ' telah menyelesaikan aktivitas: ' . $activityName,
-                            'type' => 'activity_completed',
-                            'related_id' => $activity->id,
-                            'child_id' => $childId,
-                            'is_read' => false,
-                        ]);
-                        
-                        // Send FCM notification
-                        if ($child->parent->fcm_token) {
-                            $this->fcmService->sendNotificationToDevice(
-                                $child->parent->fcm_token,
-                                'Aktivitas Selesai',
-                                "$childName telah menyelesaikan aktivitas: $activityName",
-                                [
-                                    'activity_id' => $activity->id,
-                                    'child_id' => $childId,
-                                    'plan_id' => $plan->id,
-                                    'type' => 'activity_completed'
-                                ]
-                            );
-                        }
-                    }
+            // If status changed, send notifications using Backend-Heavy approach
+            if ($previousStatus != $request->completed) {
+                $activity = $plannedActivity->activity;
+                $childIds = $plan->children->pluck('id')->toArray();
+                
+                // Send notifications to parents or teachers depending on who made the update
+                if ($this->isTeacher(Auth::user())) {
+                    // Teacher updated activity status - notify parents
+                    foreach ($childIds as $childId) {
+                        $this->notificationController->sendActivityStatusNotification(
+                            $plannedActivity->id,
+                            Auth::id(),
+                            $childId,
+                            $activity->name,
+                            $request->completed ? 'completed' : 'incomplete'
+                        );
                 }
             } else {
-                // For global activities, notify all parents if marked by teacher
-                if ($this->isTeacher($user)) {
-                $parents = User::where('role', 'parent')->get();
-                foreach ($parents as $parent) {
-                        // Create in-app notification
-                    Notification::create([
-                        'user_id' => $parent->id,
-                        'title' => 'Aktivitas Selesai',
-                        'message' => 'Aktivitas ' . $activityName . ' telah diselesaikan',
-                        'type' => 'activity_completed',
-                        'related_id' => $activity->id,
-                        'is_read' => false,
-                    ]);
-                        
-                        // Send FCM notification
-                        if ($parent->fcm_token) {
-                            $this->fcmService->sendNotificationToDevice(
-                                $parent->fcm_token,
-                                'Aktivitas Selesai',
-                                "Aktivitas $activityName telah diselesaikan",
-                                [
-                                    'activity_id' => $activity->id,
-                                    'plan_id' => $plan->id,
-                                    'type' => 'activity_completed'
-                                ]
-                            );
-                        }
-                    }
+                    // Parent updated activity status - notify teacher
+                    $teacherId = $plan->teacher_id;
+                    $notificationTitle = 'Status Aktivitas Diperbarui';
+                    $notificationMessage = 'Orang tua telah menandai aktivitas "' . $activity->name . '" sebagai ' . 
+                                          ($request->completed ? 'selesai' : 'belum selesai');
+                    
+                    $this->notificationController->store(new Request([
+                        'user_id' => $teacherId,
+                        'title' => $notificationTitle,
+                        'message' => $notificationMessage,
+                        'type' => 'activity_status',
+                        'related_id' => $plannedActivity->id,
+                        'child_id' => !empty($childIds) ? $childIds[0] : null,
+                    ]));
                 }
             }
             
-            // Notify the teacher if marked complete by a parent
-            if (!$this->isTeacher($user)) {
-            $teacher = User::find($plan->teacher_id);
-            if ($teacher) {
-                    // Create in-app notification
-                Notification::create([
-                    'user_id' => $teacher->id,
-                    'title' => 'Aktivitas Selesai',
-                        'message' => ($childName ? $childName . ' telah menyelesaikan' : 'Aktivitas telah diselesaikan oleh ' . $completerName) . ' aktivitas: ' . $activityName,
-                    'type' => 'activity_completed',
-                    'related_id' => $activity->id,
-                    'child_id' => $childId,
-                    'is_read' => false,
-                ]);
-                    
-                    // Send FCM notification
-                    if ($teacher->fcm_token) {
-                        $notificationMessage = $childName 
-                            ? "$childName telah menyelesaikan aktivitas: $activityName" 
-                            : "Aktivitas $activityName telah diselesaikan oleh $completerName";
-                            
-                        $this->fcmService->sendNotificationToDevice(
-                            $teacher->fcm_token,
-                            'Aktivitas Selesai',
-                            $notificationMessage,
-                            [
-                                'activity_id' => $activity->id,
-                                'child_id' => $childId,
-                                'plan_id' => $plan->id,
-                                'type' => 'activity_completed_by_parent'
-                            ]
-                        );
-                    }
-                }
-            }
+            DB::commit();
+            
+            return response()->json([
+                'message' => 'Activity status updated successfully',
+                'planned_activity' => $plannedActivity->load(['activity', 'plan.children'])
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error updating activity status: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to update activity status: ' . $e->getMessage()], 500);
         }
-        
-        return response()->json($activity);
     }
 } 

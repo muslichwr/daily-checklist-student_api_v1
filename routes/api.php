@@ -62,6 +62,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/notifications/system', [NotificationSystemController::class, 'createSystemNotification']);
     Route::post('/notifications/send-to-parents', [NotificationSystemController::class, 'sendToParents']);
     
+    // New backend-heavy notification endpoints
+    Route::post('/notifications/register-token', [NotificationController::class, 'registerFirebaseToken']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'getUnreadCount']);
+    Route::post('/notifications/new-plan', [NotificationSystemController::class, 'notifyNewActivityPlan']);
+    Route::post('/notifications/activity-status', [NotificationSystemController::class, 'notifyActivityStatusUpdate']);
+    
     // Photo upload endpoint
     Route::post('/upload-photo', [UploadController::class, 'store']);
 

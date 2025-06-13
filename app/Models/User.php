@@ -77,6 +77,16 @@ class User extends Authenticatable
     }
 
     /**
+     * Check if user is an admin.
+     *
+     * @return bool
+     */
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
+    }
+
+    /**
      * Get the children created by this user (if teacher).
      */
     public function teacherChildren()
