@@ -6,12 +6,21 @@ use App\Http\Controllers\Controller;
 use App\Models\Plan;
 use App\Models\PlannedActivity;
 use App\Models\User;
+use App\Models\Notification;
+use App\Services\FCMService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 
 class PlanController extends Controller
 {
+    protected $fcmService;
+
+    public function __construct(FCMService $fcmService)
+    {
+        $this->fcmService = $fcmService;
+    }
+    
     /**
      * Helper method to check if a user is a teacher
      *
@@ -107,11 +116,15 @@ class PlanController extends Controller
             'child_id' => $request->child_id, // Keep for backward compatibility
         ]);
 
+        $childIds = [];
+
         // Associate children with the plan
         if ($request->has('child_ids') && is_array($request->child_ids) && !empty($request->child_ids)) {
             $plan->children()->attach($request->child_ids);
+            $childIds = $request->child_ids;
         } elseif ($request->has('child_id') && $request->child_id) {
             $plan->children()->attach($request->child_id);
+            $childIds = [$request->child_id];
         }
 
         // Create planned activities
@@ -124,6 +137,73 @@ class PlanController extends Controller
                 'reminder' => $activity['reminder'] ?? true,
                 'completed' => false,
             ]);
+        }
+
+        // Get information about the teacher for notifications
+        $teacher = Auth::user();
+        $teacherName = $teacher->name;
+
+        // Create notifications and send FCM for each parent of the associated children
+        if (!empty($childIds)) {
+            foreach ($childIds as $childId) {
+                $child = \App\Models\Child::find($childId);
+                if ($child) {
+                    $parent = $child->parent;
+                    if ($parent) {
+                        // Create in-app notification
+                        Notification::create([
+                            'user_id' => $parent->id,
+                            'title' => 'Rencana Aktivitas Baru',
+                            'message' => 'Guru telah membuat rencana aktivitas '.strtolower($request->type).' baru untuk ' . $child->name,
+                            'type' => 'new_plan',
+                            'related_id' => $plan->id,
+                            'child_id' => $childId,
+                            'is_read' => false,
+                        ]);
+                        
+                        // Send FCM notification if token exists
+                        if ($parent->fcm_token) {
+                            $this->fcmService->sendNotificationToDevice(
+                                $parent->fcm_token,
+                                'Rencana Aktivitas Baru',
+                                "$teacherName telah membuat rencana aktivitas ".strtolower($request->type)." baru untuk " . $child->name,
+                                [
+                                    'plan_id' => $plan->id,
+                                    'child_id' => $childId,
+                                    'type' => 'new_plan'
+                                ]
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            // For global plans without specific children
+            $parents = User::where('role', 'parent')->get();
+            foreach ($parents as $parent) {
+                // Create in-app notification
+                Notification::create([
+                    'user_id' => $parent->id,
+                    'title' => 'Rencana Aktivitas Baru',
+                    'message' => 'Guru telah membuat rencana aktivitas '.strtolower($request->type).' baru',
+                    'type' => 'new_plan',
+                    'related_id' => $plan->id,
+                    'is_read' => false,
+                ]);
+                
+                // Send FCM notification if token exists
+                if ($parent->fcm_token) {
+                    $this->fcmService->sendNotificationToDevice(
+                        $parent->fcm_token,
+                        'Rencana Aktivitas Baru',
+                        "$teacherName telah membuat rencana aktivitas ".strtolower($request->type)." baru",
+                        [
+                            'plan_id' => $plan->id,
+                            'type' => 'new_plan'
+                        ]
+                    );
+                }
+            }
         }
 
         // Load the planned activities and children
@@ -308,7 +388,7 @@ class PlanController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $activity = PlannedActivity::findOrFail($id);
+        $activity = PlannedActivity::with('activity')->findOrFail($id);
         $plan = $activity->plan;
         
         // Authorization check
@@ -329,8 +409,124 @@ class PlanController extends Controller
             }
         }
         
+        $wasAlreadyCompleted = $activity->completed;
         $activity->completed = $request->completed;
         $activity->save();
+        
+        // Create notification and send FCM if the activity was marked as completed (and wasn't already completed)
+        if ($request->completed && !$wasAlreadyCompleted) {
+            $activityName = $activity->activity->title ?? 'Aktivitas';
+            
+            // Get the child ID if this activity is for a specific child
+            $childId = null;
+            $childName = '';
+            
+            // Get information about who completed the activity
+            $completerName = $user->name;
+            $completerRole = $user->role;
+            
+            if ($plan->children->isNotEmpty()) {
+                foreach ($plan->children as $child) {
+                    $childId = $child->id;
+                    $childName = $child->name;
+                    
+                    // Create notification for the parent if marked complete by teacher
+                    if ($child->parent && $this->isTeacher($user)) {
+                        // Create in-app notification
+                        Notification::create([
+                            'user_id' => $child->parent->id,
+                            'title' => 'Aktivitas Selesai',
+                            'message' => $childName . ' telah menyelesaikan aktivitas: ' . $activityName,
+                            'type' => 'activity_completed',
+                            'related_id' => $activity->id,
+                            'child_id' => $childId,
+                            'is_read' => false,
+                        ]);
+                        
+                        // Send FCM notification
+                        if ($child->parent->fcm_token) {
+                            $this->fcmService->sendNotificationToDevice(
+                                $child->parent->fcm_token,
+                                'Aktivitas Selesai',
+                                "$childName telah menyelesaikan aktivitas: $activityName",
+                                [
+                                    'activity_id' => $activity->id,
+                                    'child_id' => $childId,
+                                    'plan_id' => $plan->id,
+                                    'type' => 'activity_completed'
+                                ]
+                            );
+                        }
+                    }
+                }
+            } else {
+                // For global activities, notify all parents if marked by teacher
+                if ($this->isTeacher($user)) {
+                $parents = User::where('role', 'parent')->get();
+                foreach ($parents as $parent) {
+                        // Create in-app notification
+                    Notification::create([
+                        'user_id' => $parent->id,
+                        'title' => 'Aktivitas Selesai',
+                        'message' => 'Aktivitas ' . $activityName . ' telah diselesaikan',
+                        'type' => 'activity_completed',
+                        'related_id' => $activity->id,
+                        'is_read' => false,
+                    ]);
+                        
+                        // Send FCM notification
+                        if ($parent->fcm_token) {
+                            $this->fcmService->sendNotificationToDevice(
+                                $parent->fcm_token,
+                                'Aktivitas Selesai',
+                                "Aktivitas $activityName telah diselesaikan",
+                                [
+                                    'activity_id' => $activity->id,
+                                    'plan_id' => $plan->id,
+                                    'type' => 'activity_completed'
+                                ]
+                            );
+                        }
+                    }
+                }
+            }
+            
+            // Notify the teacher if marked complete by a parent
+            if (!$this->isTeacher($user)) {
+            $teacher = User::find($plan->teacher_id);
+            if ($teacher) {
+                    // Create in-app notification
+                Notification::create([
+                    'user_id' => $teacher->id,
+                    'title' => 'Aktivitas Selesai',
+                        'message' => ($childName ? $childName . ' telah menyelesaikan' : 'Aktivitas telah diselesaikan oleh ' . $completerName) . ' aktivitas: ' . $activityName,
+                    'type' => 'activity_completed',
+                    'related_id' => $activity->id,
+                    'child_id' => $childId,
+                    'is_read' => false,
+                ]);
+                    
+                    // Send FCM notification
+                    if ($teacher->fcm_token) {
+                        $notificationMessage = $childName 
+                            ? "$childName telah menyelesaikan aktivitas: $activityName" 
+                            : "Aktivitas $activityName telah diselesaikan oleh $completerName";
+                            
+                        $this->fcmService->sendNotificationToDevice(
+                            $teacher->fcm_token,
+                            'Aktivitas Selesai',
+                            $notificationMessage,
+                            [
+                                'activity_id' => $activity->id,
+                                'child_id' => $childId,
+                                'plan_id' => $plan->id,
+                                'type' => 'activity_completed_by_parent'
+                            ]
+                        );
+                    }
+                }
+            }
+        }
         
         return response()->json($activity);
     }

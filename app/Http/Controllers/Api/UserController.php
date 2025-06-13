@@ -214,4 +214,41 @@ class UserController extends Controller
 
         return response()->json(['message' => 'Password changed successfully']);
     }
+    
+    /**
+     * Update FCM token for the authenticated user.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function updateFcmToken(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'fcm_token' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = Auth::user();
+        $user->fcm_token = $request->fcm_token;
+        $user->save();
+
+        return response()->json(['message' => 'FCM token updated successfully']);
+    }
+
+    /**
+     * Clear FCM token for the authenticated user.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function clearFcmToken()
+    {
+        $user = Auth::user();
+        $user->fcm_token = null;
+        $user->save();
+
+        return response()->json(['message' => 'FCM token cleared successfully']);
+    }
 } 

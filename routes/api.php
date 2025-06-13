@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChecklistController;
 use App\Http\Controllers\Api\ChildController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\NotificationSystemController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UploadController;
@@ -58,7 +59,13 @@ Route::middleware('auth:sanctum')->group(function () {
     // Notifications
     Route::apiResource('notifications', NotificationController::class);
     Route::put('/notifications/read-all', [NotificationController::class, 'markAllAsRead']);
-
+    Route::post('/notifications/system', [NotificationSystemController::class, 'createSystemNotification']);
+    Route::post('/notifications/send-to-parents', [NotificationSystemController::class, 'sendToParents']);
+    
     // Photo upload endpoint
     Route::post('/upload-photo', [UploadController::class, 'store']);
+
+    // User FCM token routes
+    Route::post('/users/fcm-token', [UserController::class, 'updateFcmToken']);
+    Route::post('/users/fcm-token/clear', [UserController::class, 'clearFcmToken']);
 }); 
