@@ -54,7 +54,21 @@ class Plan extends Model
      */
     public function children(): BelongsToMany
     {
-        return $this->belongsToMany(Child::class, 'plan_children');
+        return $this->belongsToMany(Child::class, 'plan_child')
+            ->using(PlanChild::class)
+            ->withTimestamps()
+            ->withPivot(['id', 'planned_activity_id', 'completed']);
+    }
+
+    /**
+     * Get all completed activities for a specific child
+     */
+    public function childActivityCompletions($childId)
+    {
+        return $this->belongsToMany(PlannedActivity::class, 'plan_child', 'plan_id', 'planned_activity_id')
+            ->using(PlanChild::class)
+            ->withPivot(['child_id', 'completed'])
+            ->wherePivot('child_id', $childId);
     }
 
     /**

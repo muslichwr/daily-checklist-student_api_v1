@@ -20,8 +20,7 @@ class PlannedActivity extends Model
         'activity_id',
         'scheduled_date',
         'scheduled_time',
-        'reminder',
-        'completed'
+        'reminder'
     ];
 
     /**
@@ -32,7 +31,6 @@ class PlannedActivity extends Model
     protected $casts = [
         'scheduled_date' => 'date',
         'reminder' => 'boolean',
-        'completed' => 'boolean',
     ];
 
     /**
