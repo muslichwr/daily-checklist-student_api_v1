@@ -58,7 +58,8 @@ class PlanController extends Controller
             
             $query->where(function($query) use ($childIds) {
                 $query->whereHas('children', function($q) use ($childIds) {
-                    $q->whereIn('child_id', $childIds);
+                    $q->whereIn('child_id', $childIds)
+                      ->select(DB::raw('DISTINCT child_id'));
                 })
                 ->orWhereDoesntHave('children'); // Also include global plans with no children
             });
@@ -67,7 +68,8 @@ class PlanController extends Controller
         if ($request->has('child_id')) {
             $query->where(function($query) use ($request) {
                 $query->whereHas('children', function($q) use ($request) {
-                    $q->where('child_id', $request->child_id);
+                    $q->where('child_id', $request->child_id)
+                      ->select(DB::raw('DISTINCT child_id'));
                 })
                 ->orWhereDoesntHave('children'); // Also include global plans
             });
@@ -80,26 +82,30 @@ class PlanController extends Controller
         // Sort by start date, newest first
         $plans = $query->orderBy('start_date', 'desc')->get();
         
-        // For parents, include activity completion status per child
-        if (!$this->isTeacher($user) && $request->has('child_id')) {
-            $childId = $request->child_id;
-            
-            foreach ($plans as $plan) {
-                // Get completion status for each activity for this child
-                $completions = DB::table('plan_child')
-                    ->where('plan_id', $plan->id)
-                    ->where('child_id', $childId)
-                    ->whereNotNull('planned_activity_id')
-                    ->pluck('completed', 'planned_activity_id')
-                    ->toArray();
+                    // For parents, include activity completion status per child
+            if (!$this->isTeacher($user) && $request->has('child_id')) {
+                $childId = $request->child_id;
                 
-                // Attach completion status to each activity
-                foreach ($plan->plannedActivities as $activity) {
-                    $activityId = $activity->id;
-                    $activity->completed = isset($completions[$activityId]) ? (bool)$completions[$activityId] : false;
+                foreach ($plans as $plan) {
+                    // Get completion status for each activity for this child
+                    $completionRecords = DB::table('plan_child')
+                        ->where('plan_id', $plan->id)
+                        ->where('child_id', $childId)
+                        ->whereNotNull('planned_activity_id')
+                        ->get(['planned_activity_id', 'completed']);
+                    
+                    $completions = [];
+                    foreach ($completionRecords as $record) {
+                        $completions[$record->planned_activity_id] = (bool)$record->completed;
+                    }
+                    
+                    // Attach completion status to each activity
+                    foreach ($plan->plannedActivities as $activity) {
+                        $activityId = $activity->id;
+                        $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
+                    }
                 }
             }
-        }
         
         return response()->json($plans);
     }
@@ -148,16 +154,14 @@ class PlanController extends Controller
 
             $childIds = [];
 
-            // Associate children with the plan
+            // Get selected child IDs
             if ($request->has('child_ids') && is_array($request->child_ids) && !empty($request->child_ids)) {
-                $plan->children()->attach($request->child_ids);
                 $childIds = $request->child_ids;
             } elseif ($request->has('child_id') && $request->child_id) {
-                $plan->children()->attach($request->child_id);
                 $childIds = [$request->child_id];
             }
 
-            // Create planned activities
+            // Create planned activities first
             $plannedActivities = [];
             foreach ($request->activities as $activity) {
                 $plannedActivity = PlannedActivity::create([
@@ -168,10 +172,13 @@ class PlanController extends Controller
                     'reminder' => $activity['reminder'] ?? true,
                 ]);
                 $plannedActivities[] = $plannedActivity;
-                
-                // Create completion records for each child
-                if (!empty($childIds)) {
-                    foreach ($childIds as $childId) {
+            }
+
+            // Now attach children to the plan and create activity relationships
+            if (!empty($childIds)) {
+                foreach ($childIds as $childId) {
+                    // Create completion records for each child and activity
+                    foreach ($plannedActivities as $plannedActivity) {
                         DB::table('plan_child')->insert([
                             'plan_id' => $plan->id,
                             'child_id' => $childId,
@@ -254,17 +261,21 @@ class PlanController extends Controller
                 $childId = $childIds[0]; // Get the first child for now
                 
                 // Get completion status for each activity for this child
-                $completions = DB::table('plan_child')
+                $completionRecords = DB::table('plan_child')
                     ->where('plan_id', $plan->id)
                     ->where('child_id', $childId)
                     ->whereNotNull('planned_activity_id')
-                    ->pluck('completed', 'planned_activity_id')
-                    ->toArray();
+                    ->get(['planned_activity_id', 'completed']);
+                
+                $completions = [];
+                foreach ($completionRecords as $record) {
+                    $completions[$record->planned_activity_id] = (bool)$record->completed;
+                }
                 
                 // Attach completion status to each activity
                 foreach ($plan->plannedActivities as $activity) {
                     $activityId = $activity->id;
-                    $activity->completed = isset($completions[$activityId]) ? (bool)$completions[$activityId] : false;
+                    $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
                 }
             }
         }
@@ -325,21 +336,28 @@ class PlanController extends Controller
             $plan->save();
             
             // Update child associations if specified
-            $oldChildIds = $plan->children->pluck('id')->toArray();
+            $oldChildIds = DB::table('plan_child')
+                ->where('plan_id', $plan->id)
+                ->select('child_id')
+                ->distinct()
+                ->pluck('child_id')
+                ->toArray();
+                
             $newChildIds = $oldChildIds;
             
             if ($request->has('child_ids')) {
                 $newChildIds = $request->child_ids ?? [];
-                $plan->children()->detach();
-                if (!empty($newChildIds)) {
-                    $plan->children()->attach($newChildIds);
-                }
             } elseif ($request->has('child_id')) {
                 $newChildIds = $request->child_id ? [$request->child_id] : [];
-                $plan->children()->detach();
-                if ($request->child_id) {
-                    $plan->children()->attach($request->child_id);
-                }
+            }
+            
+            // Remove child associations for children that are no longer in the plan
+            $removedChildIds = array_diff($oldChildIds, $newChildIds);
+            if (!empty($removedChildIds)) {
+                DB::table('plan_child')
+                    ->where('plan_id', $plan->id)
+                    ->whereIn('child_id', $removedChildIds)
+                    ->delete();
             }
             
             // Find new children that weren't in the plan before
@@ -398,6 +416,17 @@ class PlanController extends Controller
                                         );
                                     }
                                 }
+                                // If no existing entry, create a new one
+                                else {
+                                    DB::table('plan_child')->insert([
+                                        'plan_id' => $plan->id,
+                                        'child_id' => $childId,
+                                        'planned_activity_id' => $plannedActivity->id,
+                                        'completed' => $activityData['completed'] ?? false,
+                                        'created_at' => now(),
+                                        'updated_at' => now(),
+                                    ]);
+                                }
                             }
                         }
                     } else {
@@ -429,14 +458,23 @@ class PlanController extends Controller
             if (!empty($addedChildIds)) {
                 foreach ($plan->plannedActivities as $activity) {
                     foreach ($addedChildIds as $childId) {
-                        DB::table('plan_child')->insert([
-                            'plan_id' => $plan->id,
-                            'child_id' => $childId,
-                            'planned_activity_id' => $activity->id,
-                            'completed' => false,
-                            'created_at' => now(),
-                            'updated_at' => now(),
-                        ]);
+                        // Check if this child-activity combination already exists
+                        $exists = DB::table('plan_child')
+                            ->where('plan_id', $plan->id)
+                            ->where('child_id', $childId)
+                            ->where('planned_activity_id', $activity->id)
+                            ->exists();
+                            
+                        if (!$exists) {
+                            DB::table('plan_child')->insert([
+                                'plan_id' => $plan->id,
+                                'child_id' => $childId,
+                                'planned_activity_id' => $activity->id,
+                                'completed' => false,
+                                'created_at' => now(),
+                                'updated_at' => now(),
+                            ]);
+                        }
                     }
                 }
             }
@@ -470,17 +508,21 @@ class PlanController extends Controller
                 $childId = $newChildIds[0]; // Get the first child
                 
                 // Get completion status for each activity for this child
-                $completions = DB::table('plan_child')
+                $completionRecords = DB::table('plan_child')
                     ->where('plan_id', $plan->id)
                     ->where('child_id', $childId)
                     ->whereNotNull('planned_activity_id')
-                    ->pluck('completed', 'planned_activity_id')
-                    ->toArray();
+                    ->get(['planned_activity_id', 'completed']);
+                
+                $completions = [];
+                foreach ($completionRecords as $record) {
+                    $completions[$record->planned_activity_id] = (bool)$record->completed;
+                }
                 
                 // Attach completion status to each activity
                 foreach ($plan->plannedActivities as $activity) {
                     $activityId = $activity->id;
-                    $activity->completed = isset($completions[$activityId]) ? (bool)$completions[$activityId] : false;
+                    $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
                 }
             }
 
@@ -522,7 +564,7 @@ class PlanController extends Controller
             $plan->children()->detach();
             
             // Delete the plan
-            $plan->delete();
+        $plan->delete();
 
             DB::commit();
             
@@ -570,7 +612,7 @@ class PlanController extends Controller
         }
 
         if (!$authorized) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+                return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         try {
@@ -600,19 +642,19 @@ class PlanController extends Controller
                 // Send notifications to parents or teachers depending on who made the update
                 if ($this->isTeacher(Auth::user())) {
                     // Teacher updated activity status - notify parents
-                    $this->notificationController->sendActivityStatusNotification(
-                        $plannedActivity->id,
-                        Auth::id(),
-                        $childId,
-                        $activity->name,
-                        $request->completed ? 'completed' : 'incomplete'
-                    );
-                } else {
+                        $this->notificationController->sendActivityStatusNotification(
+                            $plannedActivity->id,
+                            Auth::id(),
+                            $childId,
+                            $activity->name,
+                            $request->completed ? 'completed' : 'incomplete'
+                        );
+            } else {
                     // Parent updated activity status - notify teacher
                     $teacherId = $plan->teacher_id;
                     $notificationTitle = 'Status Aktivitas Diperbarui';
                     $notificationMessage = 'Orang tua telah menandai aktivitas "' . $activity->name . '" sebagai ' . 
-                                        ($request->completed ? 'selesai' : 'belum selesai');
+                                          ($request->completed ? 'selesai' : 'belum selesai');
                     
                     $this->notificationController->store(new Request([
                         'user_id' => $teacherId,

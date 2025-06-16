@@ -12,60 +12,71 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Rename the table if it exists
-        if (Schema::hasTable('plan_children')) {
-            // First get the existing relationships and store them
-            $existingRelations = [];
+        if (!Schema::hasTable('plan_child')) {
+            // If plan_child doesn't exist yet, check if plan_children exists to migrate from
             if (Schema::hasTable('plan_children')) {
-                $existingRelations = DB::table('plan_children')->get()->toArray();
-            }
-            
-            // Drop the old table
-            Schema::dropIfExists('plan_children');
-            
-            // Create the new table with all needed columns
-            Schema::create('plan_child', function (Blueprint $table) {
-                $table->id();
-                $table->unsignedBigInteger('plan_id');
-                $table->unsignedBigInteger('child_id');
-                $table->unsignedBigInteger('planned_activity_id')->nullable();
-                $table->boolean('completed')->default(false);
-                $table->timestamps();
+                // First get the existing relationships and store them
+                $existingRelations = [];
+                if (Schema::hasTable('plan_children')) {
+                    $existingRelations = DB::table('plan_children')->get()->toArray();
+                }
                 
-                $table->foreign('plan_id')->references('id')->on('plans')->onDelete('cascade');
-                $table->foreign('child_id')->references('id')->on('children')->onDelete('cascade');
-                $table->foreign('planned_activity_id')->references('id')->on('planned_activities')->onDelete('cascade');
+                // Drop the old table
+                Schema::dropIfExists('plan_children');
                 
-                // Unique constraint to prevent duplicate entries
-                $table->unique(['plan_id', 'child_id', 'planned_activity_id'], 'plan_child_unique');
-            });
-            
-            // Re-insert the existing relationships
-            foreach ($existingRelations as $relation) {
-                DB::table('plan_child')->insert([
-                    'plan_id' => $relation->plan_id,
-                    'child_id' => $relation->child_id,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+                // Create the new table with all needed columns
+                Schema::create('plan_child', function (Blueprint $table) {
+                    $table->id();
+                    $table->unsignedBigInteger('plan_id');
+                    $table->unsignedBigInteger('child_id');
+                    $table->unsignedBigInteger('planned_activity_id')->nullable();
+                    $table->boolean('completed')->default(false);
+                    $table->timestamps();
+                    
+                    $table->foreign('plan_id')->references('id')->on('plans')->onDelete('cascade');
+                    $table->foreign('child_id')->references('id')->on('children')->onDelete('cascade');
+                    $table->foreign('planned_activity_id')->references('id')->on('planned_activities')->onDelete('cascade');
+                    
+                    // Unique constraint to prevent duplicate entries
+                    $table->unique(['plan_id', 'child_id', 'planned_activity_id'], 'plan_child_unique');
+                });
+                
+                // Re-insert the existing relationships
+                foreach ($existingRelations as $relation) {
+                    DB::table('plan_child')->insert([
+                        'plan_id' => $relation->plan_id,
+                        'child_id' => $relation->child_id,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            } else {
+                // Just create the new table if neither exists
+                Schema::create('plan_child', function (Blueprint $table) {
+                    $table->id();
+                    $table->unsignedBigInteger('plan_id');
+                    $table->unsignedBigInteger('child_id');
+                    $table->unsignedBigInteger('planned_activity_id')->nullable();
+                    $table->boolean('completed')->default(false);
+                    $table->timestamps();
+                    
+                    $table->foreign('plan_id')->references('id')->on('plans')->onDelete('cascade');
+                    $table->foreign('child_id')->references('id')->on('children')->onDelete('cascade');
+                    $table->foreign('planned_activity_id')->references('id')->on('planned_activities')->onDelete('cascade');
+                    
+                    // Unique constraint to prevent duplicate entries
+                    $table->unique(['plan_id', 'child_id', 'planned_activity_id'], 'plan_child_unique');
+                });
             }
         } else {
-            // Just create the new table if the old one doesn't exist
-            Schema::create('plan_child', function (Blueprint $table) {
-                $table->id();
-                $table->unsignedBigInteger('plan_id');
-                $table->unsignedBigInteger('child_id');
-                $table->unsignedBigInteger('planned_activity_id')->nullable();
-                $table->boolean('completed')->default(false);
-                $table->timestamps();
-                
-                $table->foreign('plan_id')->references('id')->on('plans')->onDelete('cascade');
-                $table->foreign('child_id')->references('id')->on('children')->onDelete('cascade');
-                $table->foreign('planned_activity_id')->references('id')->on('planned_activities')->onDelete('cascade');
-                
-                // Unique constraint to prevent duplicate entries
-                $table->unique(['plan_id', 'child_id', 'planned_activity_id'], 'plan_child_unique');
-            });
+            // If plan_child already exists, update the structure if needed
+            if (!Schema::hasColumn('plan_child', 'planned_activity_id')) {
+                Schema::table('plan_child', function (Blueprint $table) {
+                    $table->unsignedBigInteger('planned_activity_id')->nullable()->after('child_id');
+                    $table->boolean('completed')->default(false)->after('planned_activity_id');
+                    $table->foreign('planned_activity_id')->references('id')->on('planned_activities')->onDelete('cascade');
+                });
+            }
         }
         
         // Transfer data from the planned activities to the new table
@@ -82,7 +93,7 @@ return new class extends Migration
                     // Get all children for this plan
                     $children = DB::table('plan_child')
                         ->where('plan_id', $plan->id)
-                        ->distinct('child_id')
+                        ->whereNull('planned_activity_id')
                         ->pluck('child_id');
                     
                     // If no children found, check for child_id on plan
@@ -120,37 +131,40 @@ return new class extends Migration
      */
     public function down(): void
     {
-        // Add back the completed field to planned_activities
-        Schema::table('planned_activities', function (Blueprint $table) {
-            $table->boolean('completed')->default(false);
-        });
-        
-        // Copy completion data back to planned_activities
-        $completions = DB::table('plan_child')
-            ->whereNotNull('planned_activity_id')
-            ->where('completed', true)
-            ->get();
+        // Add back the completed field to planned_activities if it doesn't exist
+        if (!Schema::hasColumn('planned_activities', 'completed')) {
+            Schema::table('planned_activities', function (Blueprint $table) {
+                $table->boolean('completed')->default(false);
+            });
             
-        foreach ($completions as $completion) {
-            DB::table('planned_activities')
-                ->where('id', $completion->planned_activity_id)
-                ->update(['completed' => true]);
+            // Copy completion data back to planned_activities
+            $completions = DB::table('plan_child')
+                ->whereNotNull('planned_activity_id')
+                ->where('completed', true)
+                ->get();
+                
+            foreach ($completions as $completion) {
+                DB::table('planned_activities')
+                    ->where('id', $completion->planned_activity_id)
+                    ->update(['completed' => true]);
+            }
         }
         
         // Get the existing relationships before dropping the table
         $existingRelations = [];
         if (Schema::hasTable('plan_child')) {
             $existingRelations = DB::table('plan_child')
+                ->whereNull('planned_activity_id')
                 ->select('plan_id', 'child_id')
                 ->distinct()
                 ->get()
                 ->toArray();
+                
+            // Drop the plan_child table
+            Schema::dropIfExists('plan_child');
         }
         
-        // Drop the plan_child table
-        Schema::dropIfExists('plan_child');
-        
-        // Recreate the old table if needed
+        // Recreate the old table if it doesn't exist
         if (!Schema::hasTable('plan_children')) {
             Schema::create('plan_children', function (Blueprint $table) {
                 $table->unsignedBigInteger('plan_id');

@@ -57,7 +57,8 @@ class Plan extends Model
         return $this->belongsToMany(Child::class, 'plan_child')
             ->using(PlanChild::class)
             ->withTimestamps()
-            ->withPivot(['id', 'planned_activity_id', 'completed']);
+            ->withPivot(['id', 'planned_activity_id', 'completed'])
+            ->distinct('child_id');
     }
 
     /**
