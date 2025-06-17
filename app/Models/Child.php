@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
 class Child extends Model
 {
@@ -85,5 +86,40 @@ class Child extends Model
     {
         $seed = urlencode($this->name);
         return "https://api.dicebear.com/9.x/thumbs/png?seed={$seed}";
+    }
+
+    /**
+     * Get all plans that this child is assigned to.
+     */
+    public function plans()
+    {
+        return $this->belongsToMany(Plan::class, 'plan_child')
+            ->using(PlanChild::class)
+            ->withTimestamps()
+            ->withPivot(['id', 'planned_activity_id', 'completed']);
+    }
+    
+    /**
+     * Get all planned activities with their completion status for this child.
+     */
+    public function plannedActivities()
+    {
+        return $this->belongsToMany(PlannedActivity::class, 'plan_child', 'child_id', 'planned_activity_id')
+            ->using(PlanChild::class)
+            ->withPivot(['plan_id', 'completed'])
+            ->withTimestamps();
+    }
+    
+    /**
+     * Check if a specific activity is completed by this child.
+     */
+    public function hasCompletedActivity($plannedActivityId)
+    {
+        $completion = DB::table('plan_child')
+            ->where('child_id', $this->id)
+            ->where('planned_activity_id', $plannedActivityId)
+            ->first();
+            
+        return $completion ? (bool)$completion->completed : false;
     }
 } 

@@ -230,6 +230,81 @@ class PlanController extends Controller
     }
 
     /**
+     * Get completion status for activities in a plan.
+     *
+     * @param  int  $planId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getActivityCompletionStatus($planId)
+    {
+        try {
+            // Check if plan exists
+            $plan = Plan::findOrFail($planId);
+            
+            // Get all completion records directly from the database
+            $completionRecords = DB::table('plan_child')
+                ->where('plan_id', $planId)
+                ->whereNotNull('planned_activity_id')
+                ->select('child_id', 'planned_activity_id', 'completed')
+                ->get();
+            
+            // Format the data for easier consumption by frontend
+            $formattedData = [
+                'plan_id' => $planId,
+                'activities' => [],
+                'children' => [],
+                'completion_matrix' => []
+            ];
+            
+            // Get all planned activities for this plan
+            $plannedActivities = PlannedActivity::where('plan_id', $planId)->get();
+            foreach ($plannedActivities as $activity) {
+                $formattedData['activities'][] = [
+                    'id' => $activity->id,
+                    'activity_id' => $activity->activity_id
+                ];
+            }
+            
+            // Get all children for this plan (using distinct to avoid duplicates)
+            $childIds = DB::table('plan_child')
+                ->where('plan_id', $planId)
+                ->select('child_id')
+                ->distinct()
+                ->pluck('child_id');
+                
+            $children = Child::whereIn('id', $childIds)->get();
+            
+            foreach ($children as $child) {
+                $formattedData['children'][] = [
+                    'id' => $child->id,
+                    'name' => $child->name
+                ];
+            }
+            
+            // Format completion data as a matrix
+            foreach ($completionRecords as $record) {
+                $activityId = $record->planned_activity_id;
+                $childId = $record->child_id;
+                $completed = (bool)$record->completed;
+                
+                if (!isset($formattedData['completion_matrix'][$activityId])) {
+                    $formattedData['completion_matrix'][$activityId] = [];
+                }
+                
+                $formattedData['completion_matrix'][$activityId][$childId] = $completed;
+            }
+            
+            // Also provide raw data for debugging
+            $formattedData['raw_completion_records'] = $completionRecords;
+            
+            return response()->json($formattedData);
+        } catch (\Exception $e) {
+            Log::error('Error retrieving completion status: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to retrieve completion status: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * Display the specified plan.
      *
      * @param  int  $id
@@ -237,50 +312,152 @@ class PlanController extends Controller
      */
     public function show($id)
     {
-        $plan = Plan::with(['plannedActivities.activity', 'children'])->findOrFail($id);
+        try {
+            $plan = Plan::with(['plannedActivities.activity'])->findOrFail($id);
         
-        // Check authorization
-        if ($this->isTeacher(Auth::user())) {
-            if ($plan->teacher_id !== Auth::id()) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
-        } else {
-            // For parents
-            $user = Auth::user();
-            $childIds = $user->parentChildren->pluck('id')->toArray();
-            
-            // Check if this plan is for any of the parent's children or is a global plan
-            $planForParentChild = $plan->children->isEmpty() || $plan->children->whereIn('id', $childIds)->isNotEmpty();
-            
-            if (!$planForParentChild) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-            }
-            
-            // If a specific child is viewing, include completion status
-            if (!empty($childIds)) {
-                $childId = $childIds[0]; // Get the first child for now
-                
-                // Get completion status for each activity for this child
-                $completionRecords = DB::table('plan_child')
-                    ->where('plan_id', $plan->id)
-                    ->where('child_id', $childId)
-                    ->whereNotNull('planned_activity_id')
-                    ->get(['planned_activity_id', 'completed']);
-                
-                $completions = [];
-                foreach ($completionRecords as $record) {
-                    $completions[$record->planned_activity_id] = (bool)$record->completed;
+            // Authorization for Teacher
+            if ($this->isTeacher(Auth::user())) {
+                if ($plan->teacher_id !== Auth::id()) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
                 }
-                
-                // Attach completion status to each activity
-                foreach ($plan->plannedActivities as $activity) {
-                    $activityId = $activity->id;
-                    $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
+            } else {
+                // Authorization for Parent
+                $user = Auth::user();
+                $childIds = $user->parentChildren->pluck('id')->toArray();
+        
+                // Check if this plan is for any of the parent's children
+                $planForParentChild = $plan->children()
+                    ->wherePivotIn('child_id', $childIds)
+                    ->exists();
+        
+                if (!$planForParentChild) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            }
+
+            // Get unique children without duplicates
+            $uniqueChildren = $plan->uniqueChildren();
+            
+            // Get raw completion records for backwards compatibility
+            $completionRecords = DB::table('plan_child')
+                ->where('plan_id', $id)
+                ->whereNotNull('planned_activity_id')
+                ->select('child_id', 'planned_activity_id', 'completed')
+                ->get();
+            
+            // Return the enhanced plan data with explicit completion information
+            $result = [
+                'id' => $plan->id,
+                'teacher_id' => $plan->teacher_id,
+                'type' => $plan->type,
+                'start_date' => $plan->start_date,
+                'child_id' => $plan->child_id,
+                'created_at' => $plan->created_at,
+                'updated_at' => $plan->updated_at,
+                'planned_activities' => $plan->plannedActivities,
+                'children' => $uniqueChildren,
+                'completion_map' => $plan->plannedActivities->pluck('child_completion_map', 'id'),
+                'progress_by_child' => $plan->progress_by_child,
+                'overall_progress' => $plan->overall_progress,
+                'raw_completion_data' => $completionRecords, // For backwards compatibility
+            ];
+            
+            return response()->json($result);
+        } catch (\Exception $e) {
+            Log::error('Error retrieving plan: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to retrieve plan: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Generate a summarized version of completion status for easier consumption by frontend.
+     *
+     * @param  \App\Models\Plan  $plan
+     * @param  array  $completionMap
+     * @param  \Illuminate\Database\Eloquent\Collection  $children
+     * @return array
+     */
+    private function generateCompletionSummary($plan, $completionMap, $children)
+    {
+        $summary = [
+            'by_child' => [],
+            'by_activity' => [],
+            'overall' => [
+                'total_activities' => $plan->plannedActivities->count(),
+                'total_children' => $children->count(),
+                'total_combinations' => $plan->plannedActivities->count() * $children->count(),
+                'total_completed' => 0
+            ]
+        ];
+        
+        // Initialize counters for each child
+        foreach ($children as $child) {
+            $childId = $child->id;
+            $summary['by_child'][$childId] = [
+                'name' => $child->name,
+                'total_activities' => $plan->plannedActivities->count(),
+                'completed_activities' => 0,
+                'completion_percentage' => 0
+            ];
+        }
+        
+        // Initialize counters for each activity
+        foreach ($plan->plannedActivities as $activity) {
+            $activityId = $activity->id;
+            $summary['by_activity'][$activityId] = [
+                'activity_id' => $activity->activity_id,
+                'total_children' => $children->count(),
+                'completed_by_children' => 0,
+                'completion_percentage' => 0
+            ];
+        }
+        
+        // Count completions
+        $totalCompleted = 0;
+        
+        foreach ($completionMap as $activityId => $childCompletions) {
+            foreach ($childCompletions as $childId => $completed) {
+                if ($completed) {
+                    $totalCompleted++;
+                    
+                    // Increment child's completed activities count
+                    if (isset($summary['by_child'][$childId])) {
+                        $summary['by_child'][$childId]['completed_activities']++;
+                    }
+                    
+                    // Increment activity's completed by children count
+                    if (isset($summary['by_activity'][$activityId])) {
+                        $summary['by_activity'][$activityId]['completed_by_children']++;
+                    }
                 }
             }
         }
         
-        return response()->json($plan);
+        // Calculate percentages
+        foreach ($summary['by_child'] as $childId => $childData) {
+            if ($childData['total_activities'] > 0) {
+                $summary['by_child'][$childId]['completion_percentage'] = 
+                    ($childData['completed_activities'] / $childData['total_activities']) * 100;
+            }
+        }
+        
+        foreach ($summary['by_activity'] as $activityId => $activityData) {
+            if ($activityData['total_children'] > 0) {
+                $summary['by_activity'][$activityId]['completion_percentage'] = 
+                    ($activityData['completed_by_children'] / $activityData['total_children']) * 100;
+            }
+        }
+        
+        // Update overall stats
+        $summary['overall']['total_completed'] = $totalCompleted;
+        if ($summary['overall']['total_combinations'] > 0) {
+            $summary['overall']['completion_percentage'] = 
+                ($totalCompleted / $summary['overall']['total_combinations']) * 100;
+        } else {
+            $summary['overall']['completion_percentage'] = 0;
+        }
+        
+        return $summary;
     }
 
     /**
@@ -595,27 +772,28 @@ class PlanController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $plannedActivity = PlannedActivity::with(['activity', 'plan.children'])->findOrFail($id);
-        $plan = $plannedActivity->plan;
-        $childId = $request->child_id;
-
-        // Check authorization
-        // Teachers can update any activity they created
-        $authorized = false;
-        if ($this->isTeacher(Auth::user()) && $plan->teacher_id === Auth::id()) {
-            $authorized = true;
-        } 
-        // Parents can only mark activities as completed for their own children
-        else if (!$this->isTeacher(Auth::user())) {
-            $childIds = Auth::user()->parentChildren->pluck('id')->toArray();
-            $authorized = in_array($childId, $childIds);
-        }
-
-        if (!$authorized) {
-                return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
         try {
+            // Load the activity with its relations
+            $plannedActivity = PlannedActivity::with(['activity', 'plan'])->findOrFail($id);
+            $plan = $plannedActivity->plan;
+            $childId = $request->child_id;
+
+            // Check authorization
+            // Teachers can update any activity they created
+            $authorized = false;
+            if ($this->isTeacher(Auth::user()) && $plan->teacher_id === Auth::id()) {
+                $authorized = true;
+            } 
+            // Parents can only mark activities as completed for their own children
+            else if (!$this->isTeacher(Auth::user())) {
+                $childIds = Auth::user()->parentChildren->pluck('id')->toArray();
+                $authorized = in_array($childId, $childIds);
+            }
+
+            if (!$authorized) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+
             DB::beginTransaction();
             
             // Find or create completion record
@@ -630,13 +808,16 @@ class PlanController extends Controller
                 ]
             );
             
-            // Update the completion status
+            // Store previous status for notifications
             $previousStatus = $planChild->completed;
-            $planChild->completed = $request->completed;
+            
+            // Update the completion status - ensure boolean conversion
+            $isCompleted = (bool)$request->completed;
+            $planChild->completed = $isCompleted;
             $planChild->save();
             
             // If status changed, send notifications using Backend-Heavy approach
-            if ($previousStatus != $request->completed) {
+            if ($previousStatus != $isCompleted) {
                 $activity = $plannedActivity->activity;
                 
                 // Send notifications to parents or teachers depending on who made the update
@@ -647,14 +828,14 @@ class PlanController extends Controller
                             Auth::id(),
                             $childId,
                             $activity->name,
-                            $request->completed ? 'completed' : 'incomplete'
+                            $isCompleted ? 'completed' : 'incomplete'
                         );
-            } else {
+                } else {
                     // Parent updated activity status - notify teacher
                     $teacherId = $plan->teacher_id;
                     $notificationTitle = 'Status Aktivitas Diperbarui';
                     $notificationMessage = 'Orang tua telah menandai aktivitas "' . $activity->name . '" sebagai ' . 
-                                          ($request->completed ? 'selesai' : 'belum selesai');
+                                          ($isCompleted ? 'selesai' : 'belum selesai');
                     
                     $this->notificationController->store(new Request([
                         'user_id' => $teacherId,
@@ -669,17 +850,512 @@ class PlanController extends Controller
             
             DB::commit();
             
-            // Load the activity with completion status
-            $plannedActivity = $plannedActivity->load(['activity', 'plan.children']);
-            $plannedActivity->completed = $request->completed;
+            // Refresh the planned activity to get updated completion status
+            $plannedActivity->refresh();
             
-            return response()->json([
+            // Get the child model
+            $child = Child::find($childId);
+            
+            // Create structured response with new computed properties
+            $response = [
+                'status' => 'success',
                 'message' => 'Activity status updated successfully',
-                'planned_activity' => $plannedActivity
-            ]);
+                'data' => [
+                    'activity_id' => $plannedActivity->id,
+                    'plan_id' => $plan->id,
+                    'updated_child' => [
+                        'id' => $childId,
+                        'name' => $child ? $child->name : 'Unknown',
+                        'completed' => $isCompleted
+                    ],
+                    'all_child_statuses' => $plannedActivity->child_completion_map,
+                    'is_completed' => $plannedActivity->is_completed,
+                    'activity' => [
+                        'id' => $plannedActivity->id,
+                        'title' => $plannedActivity->activity->title ?? 'Activity',
+                        'scheduled_date' => $plannedActivity->scheduled_date,
+                        'scheduled_time' => $plannedActivity->scheduled_time,
+                    ],
+                    'plan_progress' => [
+                        'by_child' => $plan->progress_by_child,
+                        'overall' => $plan->overall_progress
+                    ]
+                ]
+            ];
+            
+            return response()->json($response);
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error updating activity status: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to update activity status: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Debug endpoint to directly check plan-child completion status for a specific activity.
+     *
+     * @param  int  $planId
+     * @param  int  $activityId
+     * @param  int  $childId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function debugCompletionStatus($planId, $activityId, $childId)
+    {
+        try {
+            // Get the raw database record
+            $planChild = DB::table('plan_child')
+                ->where('plan_id', $planId)
+                ->where('planned_activity_id', $activityId)
+                ->where('child_id', $childId)
+                ->first();
+            
+            // Get other relevant data
+            $child = DB::table('children')->where('id', $childId)->first();
+            $activity = DB::table('planned_activities')->where('id', $activityId)->first();
+            $plan = DB::table('plans')->where('id', $planId)->first();
+            
+            // Format data for response
+            $result = [
+                'plan_id' => $planId,
+                'activity_id' => $activityId,
+                'child_id' => $childId,
+                'debug_time' => now()->toDateTimeString(),
+                'raw_plan_child_record' => $planChild,
+                'completed_raw_value' => $planChild ? $planChild->completed : null,
+                'completed_boolean' => $planChild ? (bool)$planChild->completed : null,
+                'planned_activity' => $activity,
+                'child' => $child,
+                'plan' => $plan,
+            ];
+            
+            return response()->json($result);
+        } catch (\Exception $e) {
+            Log::error('Error in debug endpoint: ' . $e->getMessage());
+            return response()->json(['error' => 'Debug error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get completion status of a specific activity.
+     *
+     * @param  int  $activityId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getActivityChildrenStatus($activityId)
+    {
+        try {
+            // Get the planned activity with its plan
+            $plannedActivity = PlannedActivity::with(['plan', 'activity'])->findOrFail($activityId);
+            $plan = $plannedActivity->plan;
+            
+            // Check authorization
+            if ($this->isTeacher(Auth::user())) {
+                if ($plan->teacher_id !== Auth::id()) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            } else {
+                // For parents, check if any of their children are in this plan
+                $user = Auth::user();
+                $childIds = $user->parentChildren->pluck('id')->toArray();
+                $planForParentChild = $plan->children()->wherePivotIn('child_id', $childIds)->exists();
+                
+                if (!$planForParentChild) {
+                    return response()->json(['message' => 'Unauthorized'], 403);
+                }
+            }
+            
+            // Get all unique children for this plan
+            $children = $plan->uniqueChildren();
+            
+            // Get all completion records for this activity
+            $completionRecords = DB::table('plan_child')
+                ->where('plan_id', $plan->id)
+                ->where('planned_activity_id', $activityId)
+                ->get(['child_id', 'completed', 'updated_at']);
+                
+            // Create a map of child_id -> completion status
+            $childrenStatus = [];
+            foreach ($children as $child) {
+                $childId = $child->id;
+                $childrenStatus[$childId] = [
+                    'child_id' => $childId,
+                    'name' => $child->name,
+                    'completed' => false,
+                    'last_updated' => null
+                ];
+            }
+            
+            // Update with actual completion status
+            foreach ($completionRecords as $record) {
+                $childId = $record->child_id;
+                if (isset($childrenStatus[$childId])) {
+                    $childrenStatus[$childId]['completed'] = (bool)$record->completed;
+                    $childrenStatus[$childId]['last_updated'] = $record->updated_at;
+                }
+            }
+            
+            // Calculate statistics
+            $totalChildren = count($childrenStatus);
+            $completedCount = count(array_filter($childrenStatus, function($status) {
+                return $status['completed'] === true;
+            }));
+            
+            $response = [
+                'activity_id' => $activityId,
+                'plan_id' => $plan->id,
+                'activity_details' => [
+                    'title' => $plannedActivity->activity->title ?? 'Activity',
+                    'scheduled_date' => $plannedActivity->scheduled_date,
+                    'scheduled_time' => $plannedActivity->scheduled_time,
+                ],
+                'children_status' => array_values($childrenStatus), // Convert to indexed array
+                'stats' => [
+                    'total_children' => $totalChildren,
+                    'completed_count' => $completedCount,
+                    'completion_percentage' => $totalChildren > 0 ? ($completedCount / $totalChildren) * 100 : 0,
+                ],
+                'timestamp' => now()->toDateTimeString(),
+            ];
+            
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error getting activity children status: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to get activity status: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Check if user is a parent and has access to a specific child.
+     *
+     * @param  \App\Models\User  $user
+     * @param  string  $childId
+     * @return bool
+     */
+    private function parentHasAccessToChild(User $user, $childId): bool
+    {
+        if ($user->role !== 'parent') {
+            return false;
+        }
+        
+        $parentChildrenIds = $user->parentChildren->pluck('id')->toArray();
+        return in_array($childId, $parentChildrenIds);
+    }
+    
+    /**
+     * Get plans specifically for a parent user.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function parentPlans(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Ensure user is a parent
+        if ($user->role !== 'parent') {
+            return response()->json(['message' => 'Unauthorized. This endpoint is for parents only.'], 403);
+        }
+        
+        // Get child ID from request or use first child if not specified
+        $childId = $request->query('child_id');
+        
+        // If no child_id provided, get all children IDs of this parent
+        if (!$childId) {
+            $childrenIds = $user->parentChildren->pluck('id')->toArray();
+            
+            if (empty($childrenIds)) {
+                return response()->json(['message' => 'No children found for this parent'], 404);
+            }
+            
+            // Use the first child as default
+            $childId = $childrenIds[0];
+        } else {
+            // Verify that this parent has access to the requested child
+            if (!$this->parentHasAccessToChild($user, $childId)) {
+                return response()->json(['message' => 'Unauthorized access to this child'], 403);
+            }
+        }
+        
+        // Query plans that include this child
+        $query = Plan::with(['plannedActivities', 'children'])
+            ->where(function($query) use ($childId) {
+                $query->whereHas('children', function($q) use ($childId) {
+                    $q->where('child_id', $childId);
+                })
+                ->orWhereDoesntHave('children'); // Also include global plans with no children
+            });
+        
+        if ($request->has('type')) {
+            $query->where('type', $request->type);
+        }
+        
+        // Sort by start date, newest first
+        $plans = $query->orderBy('start_date', 'desc')->get();
+        
+        // Include activity completion status for this specific child
+        foreach ($plans as $plan) {
+            // Get completion status for each activity for this child
+            $completionRecords = DB::table('plan_child')
+                ->where('plan_id', $plan->id)
+                ->where('child_id', $childId)
+                ->whereNotNull('planned_activity_id')
+                ->get(['planned_activity_id', 'completed']);
+            
+            $completions = [];
+            foreach ($completionRecords as $record) {
+                $completions[$record->planned_activity_id] = (bool)$record->completed;
+            }
+            
+            // Attach completion status to each activity
+            foreach ($plan->plannedActivities as $activity) {
+                $activityId = $activity->id;
+                $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
+                
+                // Add environment information for UI filtering
+                if ($activity->activity) {
+                    $activity->environment = $activity->activity->environment;
+                }
+            }
+            
+            // Add child-specific progress data
+            $plan->child_id = $childId;
+        }
+        
+        return response()->json([
+            'child_id' => $childId, 
+            'plans' => $plans
+        ]);
+    }
+    
+    /**
+     * Get a specific plan's details for a parent user.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function parentPlanDetail(Request $request, $id)
+    {
+        $user = Auth::user();
+        
+        // Ensure user is a parent
+        if ($user->role !== 'parent') {
+            return response()->json(['message' => 'Unauthorized. This endpoint is for parents only.'], 403);
+        }
+        
+        try {
+            $plan = Plan::with(['plannedActivities.activity'])->findOrFail($id);
+            
+            // Get child ID from request or use first child if not specified
+            $childId = $request->query('child_id');
+            
+            // If no child_id provided, get all children IDs of this parent
+            if (!$childId) {
+                $childrenIds = $user->parentChildren->pluck('id')->toArray();
+                
+                if (empty($childrenIds)) {
+                    return response()->json(['message' => 'No children found for this parent'], 404);
+                }
+                
+                // Check if any child of this parent is included in the plan
+                $planChildIds = $plan->children()->pluck('child_id')->toArray();
+                $accessibleChildren = array_intersect($childrenIds, $planChildIds);
+                
+                if (empty($accessibleChildren)) {
+                    return response()->json(['message' => 'Unauthorized. None of your children are included in this plan.'], 403);
+                }
+                
+                // Use the first accessible child
+                $childId = $accessibleChildren[0];
+            } else {
+                // Verify that this parent has access to the requested child
+                if (!$this->parentHasAccessToChild($user, $childId)) {
+                    return response()->json(['message' => 'Unauthorized access to this child'], 403);
+                }
+                
+                // Verify that this child is included in the plan
+                $planIncludesChild = $plan->children()
+                    ->where('child_id', $childId)
+                    ->exists();
+                    
+                if (!$planIncludesChild && $plan->children()->count() > 0) {
+                    return response()->json(['message' => 'This child is not included in the requested plan'], 404);
+                }
+            }
+            
+            // Get completion status for each activity for this child
+            $completionRecords = DB::table('plan_child')
+                ->where('plan_id', $plan->id)
+                ->where('child_id', $childId)
+                ->whereNotNull('planned_activity_id')
+                ->get(['planned_activity_id', 'completed']);
+            
+            $completions = [];
+            foreach ($completionRecords as $record) {
+                $completions[$record->planned_activity_id] = (bool)$record->completed;
+            }
+            
+            // Attach completion status and environment info to each activity
+            foreach ($plan->plannedActivities as $activity) {
+                $activityId = $activity->id;
+                $activity->completed = isset($completions[$activityId]) ? $completions[$activityId] : false;
+                
+                // Add environment information for UI filtering
+                if ($activity->activity) {
+                    $activity->environment = $activity->activity->environment;
+                }
+            }
+            
+            // Calculate progress for this specific child
+            $totalActivities = $plan->plannedActivities->count();
+            $completedCount = count(array_filter($completions, function($status) {
+                return $status === true;
+            }));
+            
+            $progress = [
+                'completed' => $completedCount,
+                'total' => $totalActivities,
+                'percentage' => $totalActivities > 0 ? round(($completedCount / $totalActivities) * 100, 1) : 0
+            ];
+            
+            // Return plan with child-specific data
+            $result = [
+                'id' => $plan->id,
+                'teacher_id' => $plan->teacher_id,
+                'type' => $plan->type,
+                'start_date' => $plan->start_date,
+                'child_id' => $childId,
+                'created_at' => $plan->created_at,
+                'updated_at' => $plan->updated_at,
+                'planned_activities' => $plan->plannedActivities,
+                'progress' => $progress,
+            ];
+            
+            return response()->json($result);
+        } catch (\Exception $e) {
+            Log::error('Error retrieving plan for parent: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to retrieve plan: ' . $e->getMessage()], 500);
+        }
+    }
+    
+    /**
+     * Update activity status specifically for a parent user.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function parentUpdateActivityStatus(Request $request, $id)
+    {
+        // Validate request
+        $validator = Validator::make($request->all(), [
+            'completed' => 'required|boolean',
+            'child_id' => 'required|exists:children,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = Auth::user();
+        
+        // Ensure user is a parent
+        if ($user->role !== 'parent') {
+            return response()->json(['message' => 'Unauthorized. This endpoint is for parents only.'], 403);
+        }
+        
+        // Verify parent has access to the child
+        $childId = $request->child_id;
+        if (!$this->parentHasAccessToChild($user, $childId)) {
+            return response()->json(['message' => 'Unauthorized access to this child'], 403);
+        }
+
+        try {
+            // Load the activity with its relations
+            $plannedActivity = PlannedActivity::with(['activity', 'plan'])->findOrFail($id);
+            
+            // Verify that this child is included in the plan
+            $planIncludesChild = $plannedActivity->plan->children()
+                ->where('child_id', $childId)
+                ->exists();
+                
+            if (!$planIncludesChild && $plannedActivity->plan->children()->count() > 0) {
+                return response()->json(['message' => 'This child is not included in this activity\'s plan'], 403);
+            }
+            
+            // Check if activity environment allows parent to update
+            $environment = $plannedActivity->activity->environment ?? '';
+            if ($environment !== 'Home' && $environment !== 'Both') {
+                return response()->json([
+                    'message' => 'Parents can only update activities with Home or Both environment',
+                    'environment' => $environment
+                ], 403);
+            }
+
+            DB::beginTransaction();
+            
+            // Find or create completion record
+            $planChild = PlanChild::firstOrCreate(
+                [
+                    'plan_id' => $plannedActivity->plan->id,
+                    'child_id' => $childId,
+                    'planned_activity_id' => $plannedActivity->id
+                ],
+                [
+                    'completed' => false,
+                ]
+            );
+            
+            // Store previous status for notifications
+            $previousStatus = $planChild->completed;
+            
+            // Update the completion status
+            $isCompleted = (bool)$request->completed;
+            $planChild->completed = $isCompleted;
+            $planChild->save();
+            
+            // Send notification to teacher about status change
+            if ($previousStatus != $isCompleted) {
+                $activity = $plannedActivity->activity;
+                $teacherId = $plannedActivity->plan->teacher_id;
+                $notificationTitle = 'Status Aktivitas Diperbarui';
+                $notificationMessage = 'Orang tua telah menandai aktivitas "' . $activity->title . '" sebagai ' . 
+                                      ($isCompleted ? 'selesai' : 'belum selesai');
+                
+                $this->notificationController->store(new Request([
+                    'user_id' => $teacherId,
+                    'title' => $notificationTitle,
+                    'message' => $notificationMessage,
+                    'type' => 'activity_status',
+                    'related_id' => $plannedActivity->id,
+                    'child_id' => $childId,
+                ]));
+            }
+            
+            DB::commit();
+            
+            // Refresh the planned activity to get updated completion status
+            $plannedActivity->refresh();
+            
+            // Get the child model
+            $child = Child::find($childId);
+            
+            // Return success response with updated status
+            return response()->json([
+                'success' => true,
+                'message' => 'Activity status updated successfully',
+                'data' => [
+                    'activity_id' => $plannedActivity->id,
+                    'activity_title' => $plannedActivity->activity->title ?? 'Activity',
+                    'environment' => $environment,
+                    'child_id' => $childId,
+                    'child_name' => $child ? $child->name : 'Unknown',
+                    'completed' => $isCompleted
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error updating activity status for parent: ' . $e->getMessage());
             return response()->json(['error' => 'Failed to update activity status: ' . $e->getMessage()], 500);
         }
     }

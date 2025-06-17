@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Support\Facades\DB;
 
 class Plan extends Model
 {
@@ -34,6 +35,13 @@ class Plan extends Model
     ];
 
     /**
+     * The accessors to append to the model's array form.
+     *
+     * @var array
+     */
+    protected $appends = ['progress_by_child', 'overall_progress'];
+
+    /**
      * Get the teacher that owns the plan.
      */
     public function teacher(): BelongsTo
@@ -58,7 +66,22 @@ class Plan extends Model
             ->using(PlanChild::class)
             ->withTimestamps()
             ->withPivot(['id', 'planned_activity_id', 'completed'])
-            ->distinct('child_id');
+            ->distinct();
+    }
+
+    /**
+     * Get unique children associated with this plan.
+     * Uses a cleaner approach to avoid duplicates.
+     */
+    public function uniqueChildren()
+    {
+        $childIds = DB::table('plan_child')
+            ->where('plan_id', $this->id)
+            ->select('child_id')
+            ->distinct()
+            ->pluck('child_id');
+            
+        return Child::whereIn('id', $childIds)->get();
     }
 
     /**
@@ -88,5 +111,72 @@ class Plan extends Model
         return $this->plannedActivities()
             ->whereDate('scheduled_date', $date)
             ->get();
+    }
+    
+    /**
+     * Get progress percentage for each child.
+     * 
+     * @return array
+     */
+    public function getProgressByChildAttribute()
+    {
+        $result = [];
+        $children = $this->uniqueChildren();
+        $totalActivities = $this->plannedActivities()->count();
+        
+        if ($totalActivities === 0) {
+            return $result;
+        }
+        
+        foreach ($children as $child) {
+            $completedActivities = DB::table('plan_child')
+                ->where('plan_id', $this->id)
+                ->where('child_id', $child->id)
+                ->where('completed', true)
+                ->count();
+                
+            $result[$child->id] = [
+                'child_id' => $child->id,
+                'name' => $child->name,
+                'completed' => $completedActivities,
+                'total' => $totalActivities,
+                'percentage' => round(($completedActivities / $totalActivities) * 100, 1)
+            ];
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Get overall progress percentage across all children.
+     * 
+     * @return array
+     */
+    public function getOverallProgressAttribute()
+    {
+        $children = $this->uniqueChildren();
+        $totalActivities = $this->plannedActivities()->count();
+        $childCount = $children->count();
+        
+        if ($totalActivities === 0 || $childCount === 0) {
+            return [
+                'completed' => 0,
+                'total' => 0,
+                'percentage' => 0
+            ];
+        }
+        
+        $totalCompletions = DB::table('plan_child')
+            ->where('plan_id', $this->id)
+            ->where('completed', true)
+            ->count();
+            
+        $totalPossible = $totalActivities * $childCount;
+        
+        return [
+            'completed' => $totalCompletions,
+            'total' => $totalPossible,
+            'percentage' => round(($totalCompletions / $totalPossible) * 100, 1)
+        ];
     }
 } 

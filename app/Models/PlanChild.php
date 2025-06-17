@@ -47,4 +47,26 @@ class PlanChild extends Pivot
     protected $casts = [
         'completed' => 'boolean',
     ];
+
+    /**
+     * Make sure completed is always cast to a boolean.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    public function getCompletedAttribute($value)
+    {
+        return (bool) $value;
+    }
+    
+    /**
+     * Make sure completed is explicitly set as boolean when saving.
+     *
+     * @param mixed $value
+     * @return void
+     */
+    public function setCompletedAttribute($value)
+    {
+        $this->attributes['completed'] = (bool) $value;
+    }
 } 
