@@ -33,7 +33,7 @@ class PlannedActivity extends Model
         'scheduled_date' => 'date',
         'reminder' => 'boolean',
     ];
-    
+
     /**
      * The accessors to append to the model's array form.
      *

@@ -46,19 +46,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('activities', ActivityController::class);
     Route::post('/activities/{activity}/steps', [ActivityController::class, 'addCustomSteps']);
     
-    // Plans - General routes
+    // Plans
     Route::apiResource('plans', PlanController::class);
     Route::put('/planned-activities/{id}/status', [PlanController::class, 'updateActivityStatus']);
     Route::get('/plans/{planId}/completion-status', [PlanController::class, 'getActivityCompletionStatus']);
     Route::get('/planned-activities/{activityId}/children-status', [PlanController::class, 'getActivityChildrenStatus']);
     Route::get('/debug/plans/{planId}/activities/{activityId}/children/{childId}', [PlanController::class, 'debugCompletionStatus']);
-    
-    // Parent-specific routes with additional access control
-    Route::prefix('parent')->group(function () {
-        Route::get('/plans', [PlanController::class, 'parentPlans']);
-        Route::get('/plans/{id}', [PlanController::class, 'parentPlanDetail']);
-        Route::put('/activities/{id}/status', [PlanController::class, 'parentUpdateActivityStatus']);
-    });
     
     // Checklists
     Route::apiResource('checklists', ChecklistController::class);
