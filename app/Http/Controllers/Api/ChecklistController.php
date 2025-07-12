@@ -46,7 +46,7 @@ class ChecklistController extends Controller
         $user = Auth::user();
         
         if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
-            return response()->json(['message' => 'Only teachers can assign activities'], 403);
+            return response()->json(['message' => 'Only teachers and administrators can assign activities'], 403);
         }
         
         $validator = Validator::make($request->all(), [
@@ -136,7 +136,7 @@ class ChecklistController extends Controller
         $user = Auth::user();
         
         if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
-            return response()->json(['message' => 'Only teachers can delete checklists'], 403);
+            return response()->json(['message' => 'Only teachers and administrators can delete checklists'], 403);
         }
         
         $checklist = Checklist::find($id);
@@ -238,7 +238,7 @@ class ChecklistController extends Controller
         $user = Auth::user();
         
         if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
-            return response()->json(['message' => 'Only teachers can add school observations'], 403);
+            return response()->json(['message' => 'Only teachers and administrators can add school observations'], 403);
         }
         
         $checklist = Checklist::find($id);

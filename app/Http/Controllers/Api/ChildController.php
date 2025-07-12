@@ -11,21 +11,16 @@ use Illuminate\Support\Facades\Validator;
 class ChildController extends Controller
 {
     /**
-     * Helper method to check if a user is a teacher or superadmin
-     */
-    private function isTeacher($user)
-    {
-        return $user->role === 'teacher' || $user->role === 'superadmin';
-    }
-
-    /**
      * Display a listing of the resource.
      */
     public function index()
     {
         $user = Auth::user();
         
-        if ($this->isTeacher($user)) {
+        if ($user->isAdmin()) {
+            // Superadmin can see all children
+            $children = Child::all();
+        } elseif ($user->isTeacher()) {
             $children = Child::where('teacher_id', $user->id)->get();
         } else {
             $children = Child::where('parent_id', $user->id)->get();
@@ -41,8 +36,8 @@ class ChildController extends Controller
     {
         $user = Auth::user();
         
-        if (!$this->isTeacher($user)) {
-            return response()->json(['message' => 'Only teachers can add children'], 403);
+        if (!$user->isTeacher() && !$user->isAdmin()) {
+            return response()->json(['message' => 'Only teachers and administrators can add children'], 403);
         }
         
         $validator = Validator::make($request->all(), [
@@ -62,7 +57,7 @@ class ChildController extends Controller
             'age' => $request->age,
             'date_of_birth' => $request->date_of_birth,
             'parent_id' => $request->parent_id,
-            'teacher_id' => $user->id,
+            'teacher_id' => $user->isAdmin() ? $request->teacher_id : $user->id,
             'avatar_url' => $request->avatar_url,
         ]);
         
@@ -82,11 +77,11 @@ class ChildController extends Controller
         }
         
         // Check if user is authorized to view this child
-        if ($user->isTeacher() && $child->teacher_id != $user->id) {
+        if ($user->isAdmin()) {
+            // Superadmin can view all children
+        } elseif ($user->isTeacher() && $child->teacher_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to view this child'], 403);
-        }
-        
-        if ($user->isParent() && $child->parent_id != $user->id) {
+        } elseif ($user->isParent() && $child->parent_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to view this child'], 403);
         }
         
@@ -106,11 +101,11 @@ class ChildController extends Controller
         }
         
         // Check if user is authorized to update this child
-        if ($user->isTeacher() && $child->teacher_id != $user->id) {
+        if ($user->isAdmin()) {
+            // Superadmin can update all children
+        } elseif ($user->isTeacher() && $child->teacher_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to update this child'], 403);
-        }
-        
-        if ($user->isParent() && $child->parent_id != $user->id) {
+        } elseif ($user->isParent() && $child->parent_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to update this child'], 403);
         }
         
@@ -143,7 +138,12 @@ class ChildController extends Controller
         }
         
         // Only teachers and superadmins can delete children
-        if (!$this->isTeacher($user) || $child->teacher_id != $user->id) {
+        if (!$user->isTeacher() && !$user->isAdmin()) {
+            return response()->json(['message' => 'Unauthorized to delete this child'], 403);
+        }
+        
+        // For teachers, they can only delete their own children
+        if ($user->isTeacher() && $child->teacher_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to delete this child'], 403);
         }
         

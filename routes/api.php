@@ -34,8 +34,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', [AuthController::class, 'user']);
     Route::post('/change-password', [AuthController::class, 'changePassword']);
     Route::post('/register-parent', [AuthController::class, 'registerParent']);
-    Route::post('/register-teacher', [AuthController::class, 'registerTeacherByAdmin']);
-    
+    Route::post('/create-teacher', [AuthController::class, 'createTeacher']);
+    Route::get('/teachers', [UserController::class, 'getTeachers']);
     // Users
     Route::apiResource('users', UserController::class)->except(['store']);
     Route::put('/users/{id}/change-password', [UserController::class, 'changePassword']);

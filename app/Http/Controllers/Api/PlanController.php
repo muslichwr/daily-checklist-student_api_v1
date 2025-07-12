@@ -28,14 +28,14 @@ class PlanController extends Controller
     }
     
     /**
-     * Helper method to check if a user is a teacher or superadmin
+     * Helper method to check if a user is a teacher
      *
      * @param  \App\Models\User  $user
      * @return bool
      */
     private function isTeacher(User $user): bool
     {
-        return $user->role === 'teacher' || $user->role === 'superadmin';
+        return $user->role === 'teacher';
     }
     
     /**
@@ -49,7 +49,10 @@ class PlanController extends Controller
         $user = Auth::user();
         $query = Plan::query()->with(['plannedActivities', 'children']);
         
-        if ($this->isTeacher($user)) {
+        if ($user->isAdmin()) {
+            // Superadmin can see all plans
+            // No filtering needed
+        } elseif ($this->isTeacher($user)) {
             // Teachers see plans they created
             $query->where('teacher_id', $user->id);
         } else {
@@ -118,9 +121,9 @@ class PlanController extends Controller
      */
     public function store(Request $request)
     {
-        // Only teachers can create plans
-        if (!$this->isTeacher(Auth::user())) {
-            return response()->json(['message' => 'Hanya guru yang dapat membuat rencana aktivitas'], 403);
+        // Only teachers and superadmins can create plans
+        if (!$this->isTeacher(Auth::user()) && !Auth::user()->isAdmin()) {
+            return response()->json(['message' => 'Hanya guru dan administrator yang dapat membuat rencana aktivitas'], 403);
         }
 
         // Validate request
@@ -146,7 +149,7 @@ class PlanController extends Controller
 
             // Create plan
             $plan = Plan::create([
-                'teacher_id' => Auth::id(),
+                'teacher_id' => Auth::user()->isAdmin() ? $request->teacher_id : Auth::id(),
                 'type' => $request->type,
                 'start_date' => $request->start_date,
                 'child_id' => $request->child_id, // Keep for backward compatibility
@@ -315,8 +318,12 @@ class PlanController extends Controller
         try {
             $plan = Plan::with(['plannedActivities.activity'])->findOrFail($id);
         
+            // Authorization for Superadmin
+            if (Auth::user()->isAdmin()) {
+                // Superadmin can view all plans
+            }
             // Authorization for Teacher
-            if ($this->isTeacher(Auth::user())) {
+            elseif ($this->isTeacher(Auth::user())) {
                 if ($plan->teacher_id !== Auth::id()) {
                     return response()->json(['message' => 'Unauthorized'], 403);
                 }
@@ -494,7 +501,9 @@ class PlanController extends Controller
         $plan = Plan::with(['plannedActivities', 'children'])->findOrFail($id);
 
         // Check authorization
-        if ($plan->teacher_id !== Auth::id()) {
+        if (Auth::user()->isAdmin()) {
+            // Superadmin can update all plans
+        } elseif ($plan->teacher_id !== Auth::id()) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -722,7 +731,9 @@ class PlanController extends Controller
         $plan = Plan::findOrFail($id);
         
         // Check authorization
-        if ($plan->teacher_id !== Auth::id()) {
+        if (Auth::user()->isAdmin()) {
+            // Superadmin can delete all plans
+        } elseif ($plan->teacher_id !== Auth::id()) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -779,9 +790,13 @@ class PlanController extends Controller
             $childId = $request->child_id;
 
             // Check authorization
-            // Teachers can update any activity they created
+            // Superadmins can update any activity
             $authorized = false;
-            if ($this->isTeacher(Auth::user()) && $plan->teacher_id === Auth::id()) {
+            if (Auth::user()->isAdmin()) {
+                $authorized = true;
+            }
+            // Teachers can update any activity they created
+            elseif ($this->isTeacher(Auth::user()) && $plan->teacher_id === Auth::id()) {
                 $authorized = true;
             } 
             // Parents can only mark activities as completed for their own children
@@ -949,7 +964,9 @@ class PlanController extends Controller
             $plan = $plannedActivity->plan;
             
             // Check authorization
-            if ($this->isTeacher(Auth::user())) {
+            if (Auth::user()->isAdmin()) {
+                // Superadmin can view all activities
+            } elseif ($this->isTeacher(Auth::user())) {
                 if ($plan->teacher_id !== Auth::id()) {
                     return response()->json(['message' => 'Unauthorized'], 403);
                 }

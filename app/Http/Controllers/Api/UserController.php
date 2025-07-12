@@ -12,14 +12,6 @@ use Illuminate\Support\Facades\Validator;
 class UserController extends Controller
 {
     /**
-     * Helper method to check if a user is a teacher or superadmin
-     */
-    private function isTeacher($user)
-    {
-        return $user->role === 'teacher' || $user->role === 'superadmin';
-    }
-
-    /**
      * Display a listing of the users.
      *
      * @param  \Illuminate\Http\Request  $request
@@ -41,8 +33,13 @@ class UserController extends Controller
             }
         }
         
-        // Only teachers, superadmins, and parents with specific permissions can list other users
-        if (!$this->isTeacher($currentUser) && $currentUser->role !== 'parent') {
+        // Superadmin can see all users
+        if ($currentUser->isAdmin()) {
+            return response()->json($query->orderBy('created_at', 'desc')->get());
+        }
+        
+        // Only teachers and parents with specific permissions can list other users
+        if ($currentUser->role !== 'teacher' && $currentUser->role !== 'parent') {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         
@@ -80,6 +77,39 @@ class UserController extends Controller
     }
 
     /**
+     * Display a listing of teachers.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function GetTeachers(Request $request)
+    {
+        $currentUser = Auth::user();
+        $query = User::where('role', 'teacher');
+        
+        // Superadmin can see all teachers
+        if ($currentUser->isAdmin()) {
+            // No additional filtering needed for superadmin
+        } 
+        // Teachers can only see themselves
+        elseif ($currentUser->isTeacher()) {
+            $query->where('id', $currentUser->id);
+        }
+        // Parents can see all teachers
+        elseif ($currentUser->isParent()) {
+            // No additional filtering needed for parents
+        }
+        // Other roles are not authorized
+        else {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+        
+        $teachers = $query->orderBy('created_at', 'desc')->get();
+        
+        return response()->json($teachers);
+    }
+
+    /**
      * Display the specified user.
      *
      * @param  int  $id
@@ -91,6 +121,11 @@ class UserController extends Controller
         
         // Check if user has permission to view this user
         $currentUser = Auth::user();
+        
+        // Superadmin can view all users
+        if ($currentUser->isAdmin()) {
+            return response()->json($user);
+        }
         
         // Allow parent users to view teacher data
         if ($user->role === 'teacher' && $currentUser->role === 'parent') {
@@ -118,7 +153,9 @@ class UserController extends Controller
         
         // Check if user has permission to update this user
         $currentUser = Auth::user();
-        if ($currentUser->role !== 'teacher' && $currentUser->id !== $user->id) {
+        if ($currentUser->isAdmin()) {
+            // Superadmin can update all users
+        } elseif ($currentUser->role !== 'teacher' && $currentUser->id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -144,8 +181,8 @@ class UserController extends Controller
             'status',
         ]));
         
-        // Only teachers can change status
-        if ($request->has('status') && $currentUser->role !== 'teacher') {
+        // Only teachers and superadmins can change status
+        if ($request->has('status') && $currentUser->role !== 'teacher' && !$currentUser->isAdmin()) {
             unset($user->status);
         }
         
@@ -163,14 +200,19 @@ class UserController extends Controller
     public function destroy($id)
     {
         // Only teachers and superadmins can delete users
-        if (!$this->isTeacher(Auth::user())) {
+        if (Auth::user()->role !== 'teacher' && !Auth::user()->isAdmin()) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $user = User::findOrFail($id);
         
-        // Cannot delete self or users not created by you
-        if ($user->id === Auth::id() || ($user->created_by !== Auth::id())) {
+        // Cannot delete self
+        if ($user->id === Auth::id()) {
+            return response()->json(['message' => 'Cannot delete yourself'], 403);
+        }
+        
+        // For teachers, cannot delete users not created by them
+        if (Auth::user()->role === 'teacher' && $user->created_by !== Auth::id()) {
             return response()->json(['message' => 'Cannot delete this user'], 403);
         }
         
@@ -194,12 +236,14 @@ class UserController extends Controller
         
         // Only teachers and superadmins can change other users' passwords
         $currentUser = Auth::user();
-        if (!$this->isTeacher($currentUser) && $currentUser->id !== $user->id) {
+        if ($currentUser->isAdmin()) {
+            // Superadmin can change any user's password
+        } elseif ($currentUser->role !== 'teacher' && $currentUser->id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         
-        // Further restrict: teachers/superadmins can only reset passwords for users they created
-        if ($this->isTeacher($currentUser) && $user->created_by !== $currentUser->id) {
+        // Further restrict: teachers can only reset passwords for users they created
+        if ($currentUser->role === 'teacher' && $user->created_by !== $currentUser->id) {
             return response()->json(['message' => 'You can only reset passwords for users you created'], 403);
         }
 
