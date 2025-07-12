@@ -33,7 +33,7 @@ class ActivityController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can add activities'], 403);
         }
         
@@ -104,7 +104,7 @@ class ActivityController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can update activities'], 403);
         }
         
@@ -149,7 +149,7 @@ class ActivityController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can delete activities'], 403);
         }
         
@@ -176,7 +176,7 @@ class ActivityController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can add custom steps'], 403);
         }
         

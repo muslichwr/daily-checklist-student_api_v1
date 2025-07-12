@@ -12,6 +12,14 @@ use Illuminate\Support\Facades\Validator;
 class UserController extends Controller
 {
     /**
+     * Helper method to check if a user is a teacher or superadmin
+     */
+    private function isTeacher($user)
+    {
+        return $user->role === 'teacher' || $user->role === 'superadmin';
+    }
+
+    /**
      * Display a listing of the users.
      *
      * @param  \Illuminate\Http\Request  $request
@@ -33,8 +41,8 @@ class UserController extends Controller
             }
         }
         
-        // Only teachers and parents with specific permissions can list other users
-        if ($currentUser->role !== 'teacher' && $currentUser->role !== 'parent') {
+        // Only teachers, superadmins, and parents with specific permissions can list other users
+        if (!$this->isTeacher($currentUser) && $currentUser->role !== 'parent') {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         
@@ -154,8 +162,8 @@ class UserController extends Controller
      */
     public function destroy($id)
     {
-        // Only teachers can delete users
-        if (Auth::user()->role !== 'teacher') {
+        // Only teachers and superadmins can delete users
+        if (!$this->isTeacher(Auth::user())) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -184,14 +192,14 @@ class UserController extends Controller
     {
         $user = User::findOrFail($id);
         
-        // Only teachers can change other users' passwords
+        // Only teachers and superadmins can change other users' passwords
         $currentUser = Auth::user();
-        if ($currentUser->role !== 'teacher' && $currentUser->id !== $user->id) {
+        if (!$this->isTeacher($currentUser) && $currentUser->id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         
-        // Further restrict: teachers can only reset passwords for users they created
-        if ($currentUser->role === 'teacher' && $user->created_by !== $currentUser->id) {
+        // Further restrict: teachers/superadmins can only reset passwords for users they created
+        if ($this->isTeacher($currentUser) && $user->created_by !== $currentUser->id) {
             return response()->json(['message' => 'You can only reset passwords for users you created'], 403);
         }
 

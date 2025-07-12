@@ -11,13 +11,21 @@ use Illuminate\Support\Facades\Validator;
 class ChildController extends Controller
 {
     /**
+     * Helper method to check if a user is a teacher or superadmin
+     */
+    private function isTeacher($user)
+    {
+        return $user->role === 'teacher' || $user->role === 'superadmin';
+    }
+
+    /**
      * Display a listing of the resource.
      */
     public function index()
     {
         $user = Auth::user();
         
-        if ($user->isTeacher()) {
+        if ($this->isTeacher($user)) {
             $children = Child::where('teacher_id', $user->id)->get();
         } else {
             $children = Child::where('parent_id', $user->id)->get();
@@ -33,7 +41,7 @@ class ChildController extends Controller
     {
         $user = Auth::user();
         
-        if (!$user->isTeacher()) {
+        if (!$this->isTeacher($user)) {
             return response()->json(['message' => 'Only teachers can add children'], 403);
         }
         
@@ -134,8 +142,8 @@ class ChildController extends Controller
             return response()->json(['message' => 'Child not found'], 404);
         }
         
-        // Only teachers can delete children
-        if (!$user->isTeacher() || $child->teacher_id != $user->id) {
+        // Only teachers and superadmins can delete children
+        if (!$this->isTeacher($user) || $child->teacher_id != $user->id) {
             return response()->json(['message' => 'Unauthorized to delete this child'], 403);
         }
         

@@ -28,14 +28,14 @@ class PlanController extends Controller
     }
     
     /**
-     * Helper method to check if a user is a teacher
+     * Helper method to check if a user is a teacher or superadmin
      *
      * @param  \App\Models\User  $user
      * @return bool
      */
     private function isTeacher(User $user): bool
     {
-        return $user->role === 'teacher';
+        return $user->role === 'teacher' || $user->role === 'superadmin';
     }
     
     /**

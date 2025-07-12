@@ -59,9 +59,9 @@ class AuthController extends Controller
      */
     public function registerParent(Request $request)
     {
-        // Only teachers can create parent accounts
-        if (!Auth::user()->isTeacher()) {
-            return response()->json(['message' => 'Hanya guru yang dapat membuat akun orang tua'], 403);
+        // Only teachers and superadmins can create parent accounts
+        if (Auth::user()->role !== 'teacher' && Auth::user()->role !== 'superadmin') {
+            return response()->json(['message' => 'Hanya guru dan superadmin yang dapat membuat akun orang tua'], 403);
         }
 
         $validator = Validator::make($request->all(), [
@@ -92,6 +92,51 @@ class AuthController extends Controller
         return response()->json([
             'user' => $user,
             'message' => 'Akun orang tua berhasil dibuat',
+        ], 201);
+    }
+
+    /**
+     * Register a new teacher account (protected endpoint, superadmin only)
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function registerTeacherByAdmin(Request $request)
+    {
+        // Only superadmins can create teacher accounts
+        if (Auth::user()->role !== 'superadmin') {
+            return response()->json(['message' => 'Hanya superadmin yang dapat membuat akun guru'], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users',
+            'password' => 'required|string|min:8',
+            'phone_number' => 'nullable|string|max:20',
+            'address' => 'nullable|string',
+            'profile_picture' => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => Hash::make($request->password),
+            'role' => 'teacher',
+            'created_by' => Auth::id(),
+            'is_temp_password' => true,
+            'phone_number' => $request->phone_number,
+            'address' => $request->address,
+            'profile_picture' => $request->profile_picture,
+            'status' => 'active',
+        ]);
+
+        return response()->json([
+            'user' => $user,
+            'message' => 'Akun guru berhasil dibuat',
         ], 201);
     }
 

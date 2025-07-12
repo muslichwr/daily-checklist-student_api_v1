@@ -45,7 +45,7 @@ class ChecklistController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can assign activities'], 403);
         }
         
@@ -135,7 +135,7 @@ class ChecklistController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can delete checklists'], 403);
         }
         
@@ -237,7 +237,7 @@ class ChecklistController extends Controller
     {
         $user = Auth::user();
         
-        if ($user->role !== 'teacher') {
+        if ($user->role !== 'teacher' && $user->role !== 'superadmin') {
             return response()->json(['message' => 'Only teachers can add school observations'], 403);
         }
         
