@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\ChecklistController;
 use App\Http\Controllers\Api\ChildController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\NotificationSystemController;
+use App\Http\Controllers\Api\ObservationController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UploadController;
@@ -78,4 +79,12 @@ Route::middleware('auth:sanctum')->group(function () {
     // User FCM token routes
     Route::post('/users/fcm-token', [UserController::class, 'updateFcmToken']);
     Route::post('/users/fcm-token/clear', [UserController::class, 'clearFcmToken']);
+
+    // Observations
+    Route::get('/plans/{planId}/observations', [ObservationController::class, 'index']);
+    Route::post('/plans/{planId}/observations', [ObservationController::class, 'store']);
+    Route::get('/plans/{planId}/observations/{id}', [ObservationController::class, 'show']);
+    Route::put('/plans/{planId}/observations/{id}', [ObservationController::class, 'update']);
+    Route::delete('/plans/{planId}/observations/{id}', [ObservationController::class, 'destroy']);
+    Route::get('/plans/{planId}/children/{childId}/observations', [ObservationController::class, 'getChildObservations']);
 }); 
